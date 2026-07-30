@@ -1,3 +1,22 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 // Shared REHABILITATED_PACKAGES — single source of truth
 // Packages that were temporarily compromised but are now safe
 // These packages will NOT be blocked (except specific compromised versions)
@@ -79,4 +98,75 @@ const REHABILITATED_PACKAGES = {
   }
 };
 
-module.exports = { REHABILITATED_PACKAGES };
+// Regex to validate npm package names (prevents command injection)
+const NPM_PACKAGE_REGEX = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+
+// Download/extraction limits
+const MAX_TARBALL_SIZE = 50 * 1024 * 1024; // 50MB
+const DOWNLOAD_TIMEOUT = 30_000; // 30 seconds
+// Decompressed-size cap for tar.gz extraction (M4). PARTIAL tar-bomb mitigation only —
+// bypassable by a bomb forged to a multiple of 4GB + (<1GB), because the gzip ISIZE trailer
+// this is checked against is mod 2^32. A hard cap needs streaming decompression (separate tech debt).
+const MAX_EXTRACTED_SIZE = 1024 * 1024 * 1024; // 1GB
+
+// Shared scanner constants
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB — skip files larger than this to avoid memory issues
+let _maxFileSize = MAX_FILE_SIZE;
+
+/** Get current max file size (configurable via .muaddibrc.json). */
+function getMaxFileSize() { return _maxFileSize; }
+/** Set max file size override. */
+function setMaxFileSize(size) { _maxFileSize = size; }
+/** Reset max file size to default. */
+function resetMaxFileSize() { _maxFileSize = MAX_FILE_SIZE; }
+const ACORN_OPTIONS = { ecmaVersion: 2024, sourceType: 'module', allowHashBang: true };
+
+const acorn = require('acorn');
+const crypto = require('crypto');
+
+/**
+ * AST parse cache — same content+options returns the same AST.
+ * Scanners do not mutate AST nodes (verified: only read comparisons).
+ * Cleared between scans via clearASTCache().
+ * Key = sha256(code) + '|' + optionsKey (collision-free content-addressable key)
+ */
+const _astCache = new Map();
+const _AST_CACHE_MAX = 200; // Max entries (reduced from 600 to limit memory during evaluate)
+
+/**
+ * Parse JS source with module-mode fallback to script-mode.
+ * `const package = ...` is valid in script mode but reserved in module mode.
+ * Results are cached for reuse across scanners within the same scan.
+ * Returns AST or null if both modes fail.
+ */
+function safeParse(code, extraOptions = {}) {
+  // Build cache key: sha256 content hash + options signature
+  const optKey = Object.keys(extraOptions).length === 0 ? '' : JSON.stringify(extraOptions);
+  const cacheKey = crypto.createHash('sha256').update(code).digest('hex') + '|' + optKey;
+
+  const cached = _astCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const opts = { ...ACORN_OPTIONS, ...extraOptions };
+  let ast;
+  try {
+    ast = acorn.parse(code, opts);
+  } catch {
+    try {
+      ast = acorn.parse(code, { ...opts, sourceType: 'script' });
+    } catch {
+      ast = null;
+    }
+  }
+
+  // Cache the result (including null for unparseable files)
+  if (_astCache.size >= _AST_CACHE_MAX) _astCache.clear();
+  _astCache.set(cacheKey, ast);
+  return ast;
+}
+
+function clearASTCache() {
+  _astCache.clear();
+}
+
+module.exports = { REHABILITATED_PACKAGES, NPM_PACKAGE_REGEX, MAX_TARBALL_SIZE, DOWNLOAD_TIMEOUT, MAX_EXTRACTED_SIZE, MAX_FILE_SIZE, ACORN_OPTIONS, safeParse, clearASTCache, getMaxFileSize, setMaxFileSize, resetMaxFileSize };

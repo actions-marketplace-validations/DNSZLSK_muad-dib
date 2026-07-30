@@ -1,11 +1,5 @@
 <p align="center">
-  <img src="MUADDIBLOGO.png" alt="MUAD'DIB Logo" width="200">
-</p>
-
-<h1 align="center">MUAD'DIB</h1>
-
-<p align="center">
-  <strong>Supply-chain threat detection and response for npm & PyPI</strong>
+  <img src="assets/muaddibLogo.png" alt="MUAD'DIB Logo" width="700">
 </p>
 
 <p align="center">
@@ -13,7 +7,7 @@
   <a href="https://github.com/DNSZLSK/muad-dib/actions/workflows/scan.yml"><img src="https://github.com/DNSZLSK/muad-dib/actions/workflows/scan.yml/badge.svg" alt="CI"></a>
   <a href="https://codecov.io/gh/DNSZLSK/muad-dib"><img src="https://codecov.io/gh/DNSZLSK/muad-dib/branch/master/graph/badge.svg" alt="Coverage"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/DNSZLSK/muad-dib"><img src="https://api.scorecard.dev/projects/github.com/DNSZLSK/muad-dib/badge" alt="OpenSSF Scorecard"></a>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="License">
   <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node">
   <img src="https://img.shields.io/badge/IOCs-225%2C000%2B-red" alt="IOCs">
 </p>
@@ -23,11 +17,11 @@
   <a href="#usage">Usage</a> |
   <a href="#features">Features</a> |
   <a href="#vs-code">VS Code</a> |
-  <a href="#ci-cd">CI/CD</a>
+  <a href="#cicd">CI/CD</a>
 </p>
 
 <p align="center">
-  <a href="README.fr.md">Version francaise</a>
+  <a href="docs/README.fr.md">Version francaise</a>
 </p>
 
 ---
@@ -36,20 +30,27 @@
 
 npm and PyPI supply-chain attacks are exploding. Shai-Hulud compromised 25K+ repos in 2025. Existing tools detect threats but don't help you respond.
 
-MUAD'DIB detects AND guides your response.
+MUAD'DIB combines **<!--stat:scanners-->22<!--/stat:scanners--> parallel scanners** (<!--stat:rulesTotal-->277<!--/stat:rulesTotal--> detection rules), a **deobfuscation engine**, **inter-module dataflow analysis**, **compound scoring** (<!--stat:compound-->21<!--/stat:compound--> compound rules), and a gVisor/Docker sandbox to detect known threats and suspicious behavioral patterns in npm and PyPI packages. An XGBoost classifier exists in the codebase but is **currently inactive** (see [Evaluation](#evaluation)).
 
 ---
 
 ## Positioning
 
-MUAD'DIB is an educational tool and a free first line of defense. It detects **known** npm and PyPI threats (225,000+ IOCs) and basic suspicious patterns.
+MUAD'DIB is a free, open, and fully auditable supply-chain scanner for npm and PyPI. It detects **known** threats (225,000+ IOCs), install-time RCE, credential-then-exfiltration flows, obfuscated payloads, and other suspicious behavioral patterns — locally, with no telemetry.
 
-**For enterprise protection**, use:
-- [Socket.dev](https://socket.dev) - ML behavioral analysis, cloud sandboxing
-- [Snyk](https://snyk.io) - Massive vulnerability database, CI/CD integrations
-- [Opengrep](https://opengrep.dev) - Advanced dataflow analysis, Semgrep rules
+It is licensed under the **AGPL-3.0**; a **commercial license** is available for organizations that need to embed it in a proprietary product or run it as a closed hosted service (see [License](#license)).
 
-MUAD'DIB does not replace these tools. It complements them for devs who want a quick, free check before installing an unknown package.
+It deliberately does not try to do everything — see [Scope](#scope) for exactly what it catches and what it does not.
+
+---
+
+## Scope
+
+**Detects** (npm & PyPI): known-malicious packages (name + SHA256 IOC match), typosquats, install-time RCE (lifecycle `preinstall`/`postinstall`, `curl | sh`, Python import-time, `binding.gyp`), credential read then network exfiltration (intra- and cross-file), obfuscated / high-entropy / stub-loader payloads, binary droppers (`chmod +x` + exec/spawn), and anti-analysis evasion markers.
+
+**Out of scope**: browser-only attacks (DOM/`window`, no Node.js API), the *contents* of native binaries / WASM (no binary analysis), zero-day unknown packages (the IOC feed is reactive), and non-npm/PyPI ecosystems (RubyGems, Maven, Go). Determined anti-sandbox fingerprinting and multi-stage remote payloads are known false-negative risks. Full detail: [Threat Model](docs/threat-model.md).
+
+**No telemetry.** Your code and scan results never leave your machine — MUAD'DIB only *downloads* threat-intel feeds (`muaddib update`) and, for scoring, reads public npm registry metadata. Webhook alerts are opt-in.
 
 ---
 
@@ -89,14 +90,11 @@ Scans both npm (package.json, node_modules) and Python (requirements.txt, setup.
 muaddib
 ```
 
-Launches an interactive menu to guide you through all features.
-
 ### Safe install
 
 ```bash
 muaddib install <package>
 muaddib install lodash axios --save-dev
-muaddib i express -g
 muaddib install suspicious-pkg --force    # Force install despite threats
 ```
 
@@ -110,17 +108,13 @@ Each scan displays a 0-100 risk score:
 [SCORE] 58/100 [***********---------] HIGH
 ```
 
-### Explain mode (full details)
+### Explain mode
 
 ```bash
 muaddib scan . --explain
 ```
 
-Shows for each detection:
-- Rule ID
-- MITRE ATT&CK technique
-- References (articles, CVEs)
-- Response playbook
+Shows rule ID, MITRE ATT&CK technique, references, and response playbook for each detection.
 
 ### Export
 
@@ -135,7 +129,6 @@ muaddib scan . --sarif results.sarif     # SARIF (GitHub Security)
 ```bash
 muaddib scan . --fail-on critical  # Fail only on CRITICAL
 muaddib scan . --fail-on high      # Fail on HIGH and CRITICAL (default)
-muaddib scan . --fail-on medium    # Fail on MEDIUM, HIGH, CRITICAL
 ```
 
 ### Paranoid mode
@@ -144,270 +137,95 @@ muaddib scan . --fail-on medium    # Fail on MEDIUM, HIGH, CRITICAL
 muaddib scan . --paranoid
 ```
 
-Ultra-strict detection with lower tolerance. Useful for critical projects. Detects any network access, subprocess execution, dynamic code evaluation, and sensitive file access.
+Ultra-strict detection with lower tolerance. Detects any network access, subprocess execution, dynamic code evaluation, and sensitive file access.
 
-### Discord/Slack webhook
+### Webhook alerts
 
 ```bash
 muaddib scan . --webhook "https://discord.com/api/webhooks/..."
 ```
 
-Sends an alert with score and threats to Discord or Slack.
+Strict filtering (v2.1.2): alerts only for IOC matches, sandbox-confirmed threats, or canary token exfiltration. Priority triage (v2.10.21): P1 (red, IOC/sandbox/canary), P2 (orange, high-score/compounds), P3 (yellow, rest).
 
-### Real-time monitoring
-
-```bash
-muaddib watch .
-```
-
-### Daemon mode
+### Behavioral anomaly detection (v2.0)
 
 ```bash
-muaddib daemon
-muaddib daemon --webhook "https://discord.com/api/webhooks/..."
+muaddib scan . --temporal-full     # All 4 temporal features
+muaddib scan . --temporal          # Sudden lifecycle script detection
+muaddib scan . --temporal-ast      # AST diff between versions
+muaddib scan . --temporal-publish  # Publish frequency anomaly
+muaddib scan . --temporal-maintainer # Maintainer change detection
 ```
 
-Automatically monitors all `npm install` commands and scans new packages.
+Detects supply-chain attacks **before** they appear in IOC databases by analyzing changes between package versions. See [Evaluation Methodology](docs/EVALUATION_METHODOLOGY.md) for details.
 
-### Update IOCs (fast, ~5 seconds)
-
-```bash
-muaddib update
-```
-
-Loads the 225,000+ IOCs shipped in the package, merges YAML IOCs and additional GitHub sources (GenSecAI, DataDog). Run this after `npm install` for an instant IOC refresh.
-
-### Scrape IOCs (full, ~5 minutes)
-
-```bash
-muaddib scrape
-```
-
-Full refresh from all primary sources. Downloads OSV bulk dumps for npm and PyPI (~100-200MB), OSSF, and all other sources. Run this when you want the absolute latest data.
-
-Sources:
-- **OSV.dev npm dump** - Bulk download of all MAL-* entries
-- **OSV.dev PyPI dump** - Bulk download of all PyPI MAL-* entries
-- **GenSecAI Shai-Hulud 2.0 Detector** - Consolidated list of 700+ Shai-Hulud packages
-- **DataDog Security Labs** - Consolidated IOCs from multiple vendors
-- **OSSF Malicious Packages** - OpenSSF database (8000+ reports via OSV.dev)
-- **GitHub Advisory Database** - Malware-tagged advisories
-- **Snyk Known Malware** - Historical malware packages
-- **Static IOCs** - Socket.dev, Phylum, npm-removed packages
-
-### Docker Sandbox
+### Docker sandbox
 
 ```bash
 muaddib sandbox <package-name>
 muaddib sandbox <package-name> --strict
 ```
 
-Analyzes a package in an isolated Docker container with multi-layer monitoring:
-- **System tracing** (strace): file access, process spawns, syscall monitoring
-- **Network capture** (tcpdump): DNS resolutions with resolved IPs, HTTP requests (method, host, path, body), TLS SNI detection
-- **Filesystem diff**: snapshot before/after install, detects files created in suspicious locations
-- **Data exfiltration detection**: 16 sensitive patterns (tokens, credentials, SSH keys, private keys, .env)
-- **Scoring engine**: 0-100 risk score based on behavioral severity
+Dynamic analysis in an isolated Docker container: strace, tcpdump, filesystem diff, canary tokens, CI-aware environment, and monkey-patching preload for time-bomb detection (multi-run at [0h, 72h, 7d] offsets).
 
-Use `--strict` to block all non-essential outbound network traffic via iptables.
-
-Requires Docker Desktop installed.
+### Other commands
 
 ```bash
-muaddib sandbox lodash          # Safe package
-muaddib sandbox suspicious-pkg  # Analyze unknown package
+muaddib watch .                    # Real-time monitoring
+muaddib daemon                     # Daemon mode (auto-scan npm install)
+muaddib update                     # Update IOCs (fast, ~5s)
+muaddib scrape                     # Full IOC refresh (~5min)
+muaddib diff HEAD~1                # Compare threats with previous commit
+muaddib init-hooks                 # Pre-commit hooks (husky/pre-commit/git)
+muaddib scan . --breakdown         # Explainable score decomposition
+muaddib replay                     # Ground truth validation (90/94 TPR@3, v2.11.48)
 ```
-
-### Sandbox network report
-
-```bash
-muaddib sandbox-report <package-name>
-muaddib sandbox-report <package-name> --strict
-```
-
-Same as `sandbox` but displays a detailed network report: DNS resolutions, HTTP requests, TLS connections, blocked connections (strict mode), and data exfiltration alerts.
-
-### Diff (compare versions)
-
-```bash
-muaddib diff <ref> [path]
-```
-
-Compare threats between the current version and a previous commit/tag. Shows only **NEW** threats introduced since the reference point.
-
-```bash
-muaddib diff HEAD~1             # Compare with previous commit
-muaddib diff v1.2.0             # Compare with tag
-muaddib diff main               # Compare with branch
-muaddib diff abc1234            # Compare with specific commit
-```
-
-Example output:
-```
-[MUADDIB DIFF] Comparing abc1234 -> def5678
-
-  Risk Score: 25 -> 45 (+20 worse)
-  Threats:    3 -> 5
-
-  NEW threats:     2
-  REMOVED threats: 0
-  Unchanged:       3
-
-  NEW THREATS (introduced since v1.2.0)
-  ------------------------------------
-  1. [HIGH] suspicious_dependency
-     Known malicious package detected
-     File: package.json
-```
-
-Use in CI to only fail on **new** threats, not existing technical debt:
-```yaml
-- run: muaddib diff ${{ github.event.pull_request.base.sha }} --fail-on high
-```
-
-### Pre-commit hooks
-
-```bash
-muaddib init-hooks [options]
-```
-
-Automatically scan before each commit. Supports multiple hook systems:
-
-```bash
-muaddib init-hooks                        # Auto-detect (husky/pre-commit/git)
-muaddib init-hooks --type husky           # Force husky
-muaddib init-hooks --type pre-commit      # Force pre-commit framework
-muaddib init-hooks --type git             # Force native git hooks
-muaddib init-hooks --mode diff            # Only block NEW threats
-```
-
-#### With pre-commit framework
-
-Add to `.pre-commit-config.yaml`:
-```yaml
-repos:
-  - repo: https://github.com/DNSZLSK/muad-dib
-    rev: v1.4.1
-    hooks:
-      - id: muaddib-scan        # Scan all threats
-      # - id: muaddib-diff      # Or: only new threats
-      # - id: muaddib-paranoid  # Or: ultra-strict mode
-```
-
-#### With husky
-
-```bash
-npx husky add .husky/pre-commit "npx muaddib scan . --fail-on high"
-# Or for diff mode:
-npx husky add .husky/pre-commit "npx muaddib diff HEAD --fail-on high"
-```
-
-#### Remove hooks
-
-```bash
-muaddib remove-hooks [path]
-```
-
-Removes all MUAD'DIB hooks (husky and git native).
-
-#### Native git hooks
-
-```bash
-muaddib init-hooks --type git
-# Creates .git/hooks/pre-commit
-```
-
-### Version check
-
-MUAD'DIB automatically checks for new versions on startup and notifies you if an update is available.
 
 ---
 
 ## Features
 
-### Python / PyPI support
+### <!--stat:scanners-->22<!--/stat:scanners--> parallel scanners
 
-MUAD'DIB automatically detects and scans Python projects:
+| Scanner | Detection |
+|---------|-----------|
+| AST Parse (acorn) | eval, Function, credential theft, binary droppers, prototype hooks |
+| Pattern Matching | Shell commands, reverse shells, dead man's switch |
+| Dataflow Analysis | Credential read + network send (intra-file and cross-file) |
+| Obfuscation Detection | JS obfuscation patterns (skip .min.js) |
+| Deobfuscation Pre-processing | String concat, charcode, base64, hex array, const propagation |
+| Inter-module Dataflow | Cross-file taint propagation (3-hop chains, class methods) |
+| Intent Coherence | Intra-file source-sink pairing (credential + eval/network) |
+| Typosquatting | npm + PyPI (Levenshtein distance) |
+| Python Scanner | requirements.txt, setup.py, pyproject.toml, 14K+ PyPI IOCs |
+| Shannon Entropy | High-entropy strings (5.5 bits + 50 chars min) |
+| AI Config Scanner | .cursorrules, CLAUDE.md, copilot-instructions.md injection |
+| Package/Dependencies | Lifecycle scripts, IOC matching (225K+ packages) |
+| GitHub Actions | Shai-Hulud backdoor detection |
+| Hash Scanner | Known malicious file hashes |
+| IOC Strings (intel-triage P1.1) | YARA-style string matching (Axios 2026, TeamPCP, GlassWorm, CanisterSprawl) |
+| Anti-Forensic AST (intel-triage P1.2) | XOR loop + self-delete + decoy write compound (csec autodelete) |
+| Stub Package (intel-triage P1.3) | Tiny main file + external dep URL + lifecycle hook (ltidi chain) |
+| Monorepo Scanner | Lerna/pnpm-workspace/turbo detection (Sprint 1 audit MR-C2 fix) |
+| Trusted-Dep-Diff (opt-in) | Diff against trusted dep tarballs from registry (v2.10.x) |
+| Python Source (PYSRC) | Import-time / install-time RCE patterns in `__init__.py` / `setup.py` (v2.11.41 — closes TrapDoor PyPI gap) |
+| Python AST (PYAST) | Tree-sitter-Python AST with taint-aware detectors (v2.11.42+) |
+| Anti-Scanner Injection (ASI) | Prompt-injection text in comments/strings that coerces an LLM code reviewer into a clean verdict or into skipping an obfuscated payload (ASI-001..004, Hades campaign 2026-06) |
 
-- **requirements.txt** - All formats including `-r` recursive includes, extras, environment markers
-- **setup.py** - Extracts `install_requires` and `setup_requires`
-- **pyproject.toml** - PEP 621 dependencies and Poetry dependencies
+### <!--stat:rulesTotal-->277<!--/stat:rulesTotal--> detection rules
 
-Python packages are checked against 14,000+ known malicious PyPI packages (from OSV.dev) and tested for typosquatting against popular PyPI packages (requests, numpy, flask, django, pandas, etc.) using PEP 503 name normalization.
+All rules (<!--stat:rulesCore-->272<!--/stat:rulesCore--> RULES + <!--stat:rulesParanoid-->5<!--/stat:rulesParanoid--> PARANOID) are mapped to MITRE ATT&CK techniques. See [SECURITY.md](SECURITY.md#detection-rules) for the complete rules reference.
 
-```
-[PYTHON] Detected Python project (3 dependency files)
-  requirements.txt: 12 packages
-  setup.py: 3 packages
-  pyproject.toml: 8 packages
+### Detected campaigns
 
-[CRITICAL] PyPI IOC match: malicious-pkg (all versions)
-[HIGH] PyPI typosquat: "reqeusts" looks like "requests"
-```
-
-### Typosquatting detection
-
-MUAD'DIB detects packages with names similar to popular packages (npm and PyPI):
-
-```
-[HIGH] Package "lodahs" looks like "lodash" (swapped_chars). Possible typosquatting.
-```
-
-### Dataflow analysis
-
-Detects when code reads credentials AND sends them over the network:
-
-```
-[CRITICAL] Suspicious flow: credential read (readFileSync, GITHUB_TOKEN) + network send (fetch)
-```
-
-### GitHub Actions scanning
-
-Detects malicious patterns in `.github/workflows/` YAML files, including Shai-Hulud 2.0 backdoor indicators.
-
-### Detected attacks
-
-| Campaign | Packages | Status |
-|----------|----------|--------|
-| Shai-Hulud v1 (Sept 2025) | @ctrl/tinycolor, ng2-file-upload | Detected |
-| Shai-Hulud v2 (Nov 2025) | @asyncapi/specs, posthog-node, kill-port | Detected |
-| Shai-Hulud v3 (Dec 2025) | @vietmoney/react-big-calendar | Detected |
-| event-stream (2018) | flatmap-stream, event-stream | Detected |
-| eslint-scope (2018) | eslint-scope | Detected |
-| Protestware | node-ipc, colors, faker | Detected |
-| Typosquats | crossenv, mongose, babelcli | Detected |
-
-### Detected techniques
-
-| Technique | MITRE | Detection |
-|-----------|-------|-----------|
-| Credential theft (.npmrc, .ssh) | T1552.001 | AST |
-| Env var exfiltration | T1552.001 | AST |
-| Remote code execution | T1105 | Pattern |
-| Reverse shell | T1059.004 | Pattern |
-| Dead man's switch | T1485 | Pattern |
-| Obfuscated code | T1027 | Heuristics |
-| Typosquatting (npm + PyPI) | T1195.002 | Levenshtein |
-| Supply chain compromise | T1195.002 | IOC matching |
-| PyPI malicious package | T1195.002 | IOC matching |
-| Sandbox behavioral analysis | Multiple | Docker + strace + tcpdump |
-
----
-
-## IOC Sources
-
-MUAD'DIB aggregates threat intelligence from verified sources only:
-
-| Source | Type | Coverage |
-|--------|------|----------|
-| [OSV.dev npm dump](https://osv.dev) | Bulk zip | 200,000+ npm MAL-* entries |
-| [OSV.dev PyPI dump](https://osv.dev) | Bulk zip | 14,000+ PyPI MAL-* entries |
-| [GenSecAI Shai-Hulud Detector](https://github.com/gensecaihq/Shai-Hulud-2.0-Detector) | GitHub | 700+ Shai-Hulud packages |
-| [DataDog Security Labs](https://github.com/DataDog/indicators-of-compromise) | GitHub | Consolidated IOCs from 7 vendors |
-| [OSSF Malicious Packages](https://github.com/ossf/malicious-packages) | OSV API | 8000+ malware reports |
-| [GitHub Advisory](https://github.com/advisories?query=type%3Amalware) | OSV API | Malware-tagged advisories |
-| Snyk Known Malware | Static | Historical attacks |
-| Socket.dev / Phylum | Static | Manual additions |
+| Campaign | Status |
+|----------|--------|
+| GlassWorm (2026, 433+ packages) | Detected |
+| Shai-Hulud v1/v2/v3 (2025) | Detected |
+| event-stream (2018) | Detected |
+| eslint-scope (2018) | Detected |
+| Protestware (node-ipc, colors, faker) | Detected |
+| Typosquats (crossenv, mongose, babelcli) | Detected |
 
 ---
 
@@ -415,32 +233,21 @@ MUAD'DIB aggregates threat intelligence from verified sources only:
 
 The VS Code extension automatically scans your npm projects.
 
-### Installation
-
-Search "MUAD'DIB" in VS Code Extensions, or:
-
 ```bash
 code --install-extension dnszlsk.muaddib-vscode
 ```
 
-### Commands
-
 - `MUAD'DIB: Scan Project` - Scan entire project
 - `MUAD'DIB: Scan Current File` - Scan current file
+- Settings: `muaddib.autoScan`, `muaddib.webhookUrl`, `muaddib.failLevel`
 
-### Settings
-
-- `muaddib.autoScan` - Auto-scan on project open (default: true)
-- `muaddib.webhookUrl` - Discord/Slack webhook URL
-- `muaddib.failLevel` - Alert level (critical/high/medium/low)
+See [vscode-extension/README.md](vscode-extension/README.md) for full documentation.
 
 ---
 
 ## CI/CD
 
 ### GitHub Actions (Marketplace)
-
-Use the official MUAD'DIB action from the GitHub Marketplace:
 
 ```yaml
 name: Security Scan
@@ -462,60 +269,49 @@ jobs:
           sarif: 'results.sarif'
 ```
 
-#### Action Inputs
-
 | Input | Description | Default |
 |-------|-------------|---------|
 | `path` | Path to scan | `.` |
-| `fail-on` | Minimum severity to fail (critical/high/medium/low) | `high` |
-| `sarif` | Path for SARIF output file | `` |
-| `paranoid` | Enable ultra-strict detection | `false` |
+| `fail-on` | Minimum severity to fail | `high` |
+| `sarif` | SARIF output file path | |
+| `paranoid` | Ultra-strict detection | `false` |
 
-#### Action Outputs
+### Pre-commit hooks
 
-| Output | Description |
-|--------|-------------|
-| `sarif-file` | Path to generated SARIF file |
-| `risk-score` | Risk score (0-100) |
-| `threats-count` | Number of threats detected |
-| `exit-code` | Exit code (0 = clean) |
+```bash
+muaddib init-hooks                        # Auto-detect (husky/pre-commit/git)
+muaddib init-hooks --type husky           # Force husky
+muaddib init-hooks --mode diff            # Only block NEW threats
+```
 
-Alerts appear in Security > Code scanning alerts.
+With pre-commit framework:
+```yaml
+repos:
+  - repo: https://github.com/DNSZLSK/muad-dib
+    rev: v2.11.139
+    hooks:
+      - id: muaddib-scan
+```
 
 ---
 
-## Architecture
+## Evaluation
 
-```
-MUAD'DIB Scanner
-|
-+-- IOC Match (225,000+ packages, JSON DB)
-|   +-- OSV.dev npm dump (200K+ MAL-* entries)
-|   +-- OSV.dev PyPI dump (14K+ MAL-* entries)
-|   +-- GenSecAI Shai-Hulud Detector
-|   +-- DataDog Consolidated IOCs
-|   +-- OSSF Malicious Packages (via OSV)
-|   +-- GitHub Advisory (malware)
-|   +-- Snyk Known Malware
-|   +-- Static IOCs (Socket, Phylum)
-|
-+-- AST Parse (acorn)
-+-- Pattern Matching (shell, scripts)
-+-- Typosquat Detection (npm + PyPI, Levenshtein)
-+-- Python Scanner (requirements.txt, setup.py, pyproject.toml)
-+-- GitHub Actions Scanner
-+-- Paranoid Mode (ultra-strict)
-+-- Docker Sandbox (behavioral analysis, network capture)
-|
-v
-Dataflow Analysis (credential read -> network send)
-|
-v
-Threat Enrichment (rules, MITRE ATT&CK, playbooks)
-|
-v
-Output (CLI, JSON, HTML, SARIF, Webhook)
-```
+Last measured **v2.11.48** (2026-05-26), **rules-only** (the ML classifier is inactive — see below). Ground truth: 94 in-scope real-world attacks + 200 random npm + 124 PyPI + 107 adversarial/holdout.
+
+| Metric | Result |
+|--------|--------|
+| Detection rate (TPR@3) | **95.74%** (90/94) |
+| Alert rate (TPR@20) | **88.30%** (83/94) |
+| FPR — curated npm (548) | **1.10%** (6/545) |
+| FPR — random npm (200) | **2.50%** (5/200) |
+| FPR — PyPI (132) | **9.68%** (12/124) |
+| ADR — adversarial + holdout | **96.26%** (103/107) |
+| Wild TPR (Datadog 17K) | **92.8%** (13,538/14,587) |
+
+**ML classifier: inactive.** An XGBoost model lives in `src/ml/` but is never wired into `muaddib scan`, and runs LOG-ONLY in the monitor since 2026-04-08 (the trained model collapsed, pending retrain). All numbers above are rules-only.
+
+Full protocol, per-track history, the PyPI cap-35 caveat, operational (GHSA-denominated) coverage, and the ML retrain methodology: [Evaluation Methodology](docs/EVALUATION_METHODOLOGY.md).
 
 ---
 
@@ -549,10 +345,11 @@ npm test
 
 ### Testing
 
-- **218 unit/integration tests** - 80% code coverage via [Codecov](https://codecov.io/gh/DNSZLSK/muad-dib)
-- **56 fuzz tests** - Malformed YAML, invalid JSON, binary files, ReDoS, unicode, 10MB inputs
-- **15 adversarial tests** - Simulated malicious packages, 15/15 detection rate
-- **ESLint security audit** - `eslint-plugin-security` with 14 rules enabled
+- **<!--stat:tests-->4545<!--/stat:tests--> tests** across <!--stat:testFiles-->152<!--/stat:testFiles--> modular test files
+- **56 fuzz tests** - Malformed inputs, ReDoS, unicode, binary
+- **Datadog 17K benchmark** - 14,587 confirmed malware samples (in-scope)
+- **Ground truth validation** - 96 real-world attacks (95.74% TPR@3, 88.30% TPR@20 — v2.11.48 full measure on 94 in-scope)
+- **False positive validation** (v2.11.48 measure) - 1.10% FPR rules (6/545 scanned), 2.50% on 200 random, 9.68% on 124/132 PyPI (first honest measurement post-Track-D download fix). ML classifier currently inactive — see Evaluation Metrics → ML Classifier.
 
 ---
 
@@ -564,15 +361,26 @@ npm test
 
 ## Documentation
 
+- [Blog](https://dnszlsk.github.io/muad-dib/blog/) - Technical articles on supply-chain threat detection
+- [Carnet de bord](docs/CARNET_DE_BORD_MUADDIB.md) - Development journal (in French)
+- [Documentation Index](docs/INDEX.md) - All documentation in one place
+- [Evaluation Methodology](docs/EVALUATION_METHODOLOGY.md) - Experimental protocol, holdout scores
 - [Threat Model](docs/threat-model.md) - What MUAD'DIB detects and doesn't detect
-- [Security Audit Report v1.4.1](docs/MUADDIB_Security_Audit_Report_v1.4.1.pdf) - Full security audit (58 issues fixed)
-- [IOCs YAML](iocs/) - Threat database
+- [Security Policy](SECURITY.md) - Detection rules reference (<!--stat:rulesTotal-->277<!--/stat:rulesTotal--> rules)
+- [Security Audit](docs/SECURITY_AUDIT.md) - Bypass validation report
+- [FP Analysis](docs/EVALUATION.md) - Historical false positive analysis
 
 ---
 
 ## License
 
-MIT
+MUAD'DIB is licensed under the **GNU Affero General Public License v3.0 only** (`AGPL-3.0-only`) — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+You are free to use, study, modify, and redistribute it — including over a network — provided that derivative works and network-deployed modifications are released under the same license.
+
+**Commercial licensing:** to embed MUAD'DIB in a proprietary / closed-source product, or to offer it as a hosted service without the AGPL's source-disclosure obligations, a separate commercial license is available. Open an issue or contact the author ([DNSZLSK](https://github.com/DNSZLSK)).
+
+Copyright (C) 2026 DNSZLSK.
 
 ---
 

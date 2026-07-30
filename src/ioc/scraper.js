@@ -1,13 +1,106 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const AdmZip = require('adm-zip');
 
 const IOC_FILE = path.join(__dirname, 'data/iocs.json');
 const COMPACT_IOC_FILE = path.join(__dirname, 'data/iocs-compact.json');
-const STATIC_IOCS_FILE = path.join(__dirname, 'data/static-iocs.json');
-const { generateCompactIOCs } = require('./updater.js');
+const HOME_IOC_FILE = path.join(os.homedir(), '.muaddib', 'data', 'iocs.json');
+const { generateCompactIOCs, NEVER_WILDCARD, expandCompactIOCs, writeLeanIOCFile } = require('./updater.js');
 const { Spinner } = require('../utils.js');
+const { NPM_PACKAGE_REGEX } = require('../shared/constants.js');
+const { version: PKG_VERSION } = require('../../package.json');
+
+// Version format validation (semver-like + wildcard)
+// Permissive version validator — accepts:
+//   - npm semver (1.2.3, 1.2.3-beta.1+build42, 0.x.y)
+//   - PEP 440 (0.1.0b7, 1.2.post1, 1.2.dev0, 0.1.0rc1)
+//   - calendar versioning (2024.5.0)
+//   - 4-segment versions (99.99.99.1, 0.0.7.5)
+//   - wildcard (*)
+// Rejects only structural abuse: path traversal (..), shell metachars,
+// whitespace, slashes, length > 100. The previous regex required first
+// char in [1-9] after a '0' which broke ALL 0.x.y versions (false negative
+// spam in scraper logs ; ~600 valid PyPI/npm versions wrongly skipped per scrape).
+const VERSION_INVALID_CHARS = /[\s\\/'"`;|&$<>(){}[\]?]/;
+function isValidVersion(version) {
+  if (!version || typeof version !== 'string') return false;
+  if (version === '*') return true;
+  if (version.length > 100) return false;
+  if (version.includes('..')) return false;
+  if (VERSION_INVALID_CHARS.test(version)) return false;
+  // Must start with a digit (or 'v' prefix), and contain only word chars / . / + / -
+  if (!/^v?\d/.test(version)) return false;
+  return /^[\w.+-]+$/.test(version);
+}
+// Backwards compat: keep VERSION_RE as a no-op test wrapper for any legacy
+// caller that imports it. Prefer isValidVersion() in new code.
+const VERSION_RE = { test: isValidVersion };
+
+// Aggregated warning counters for noisy logs (reset per scraper run).
+// Avoids spamming hundreds of WARN lines for malware feeds with non-standard
+// version strings — a single summary line is logged at the end of runScraper.
+let _noVersionSkipCount = 0;
+let _invalidVersionSkipCount = 0;
+let _invalidVersionSamples = [];  // first 3 samples for context
+let _invalidNameSkipCount = 0;
+let _invalidNameSamples = [];  // first 3 samples for context
+
+/**
+ * Validate an IOC package entry before insertion.
+ * Returns true if valid, false if should be skipped.
+ */
+function validateIOCEntry(pkgName, version, ecosystem) {
+  if (!pkgName || typeof pkgName !== 'string') return false;
+  // npm: validate with NPM_PACKAGE_REGEX
+  if (ecosystem === 'npm' || !ecosystem) {
+    if (!NPM_PACKAGE_REGEX.test(pkgName)) {
+      // Aggregated counter (summary emitted by runScraper) — was a per-line
+      // console.warn that spammed 100+ lines on feeds carrying non-spec names.
+      _invalidNameSkipCount++;
+      if (_invalidNameSamples.length < 3) _invalidNameSamples.push(pkgName);
+      return false;
+    }
+  }
+  // PyPI: basic check — no path traversal, no slashes
+  if (ecosystem === 'pypi') {
+    if (/[/\\]|\.\./.test(pkgName)) {
+      _invalidNameSkipCount++;
+      if (_invalidNameSamples.length < 3) _invalidNameSamples.push(pkgName);
+      return false;
+    }
+  }
+  // Version validation — silent counter (aggregated log emitted by runScraper).
+  // The previous per-line WARN was spamming ~600 lines per scrape on PyPI feeds.
+  if (version && !VERSION_RE.test(version)) {
+    _invalidVersionSkipCount++;
+    if (_invalidVersionSamples.length < 3) {
+      _invalidVersionSamples.push(`${version} for ${pkgName}`);
+    }
+    return false;
+  }
+  return true;
+}
 
 // Allowed domains for redirections (SSRF security)
 const ALLOWED_REDIRECT_DOMAINS = [
@@ -93,7 +186,7 @@ function parseCSVLine(line) {
  * @returns {string[][]} Array of parsed lines
  */
 function parseCSV(csvContent, hasHeader = true) {
-  const lines = csvContent.split('\n').filter(l => l.trim());
+  const lines = csvContent.split(/\r?\n/).filter(l => l.trim());
   const startIndex = hasHeader ? 1 : 0;
   const results = [];
 
@@ -107,19 +200,15 @@ function parseCSV(csvContent, hasHeader = true) {
   return results;
 }
 
-function loadStaticIOCs() {
-  try {
-    if (fs.existsSync(STATIC_IOCS_FILE)) {
-      return JSON.parse(fs.readFileSync(STATIC_IOCS_FILE, 'utf8'));
-    }
-  } catch (e) {
-    console.log(`[WARN] Error loading static-iocs.json: ${e.message}`);
-  }
-  return { socket: [], phylum: [], npmRemoved: [] };
-}
-
 const MAX_REDIRECTS = 5;
-const MAX_RESPONSE_SIZE = 200 * 1024 * 1024; // 200MB
+// Env-tunable (idiom: parseInt(env) || default). Default 512MB — the OSV npm all.zip
+// crossed the old 200MB cap on 2026-07 (measured 200.04MB), which silently dropped the
+// entire OSV npm dump AND emptied knownIds (→ OSSF re-fetched all ~31k entries one-by-one).
+// Bump gives headroom for growth; lower it via MUADDIB_MAX_RESPONSE_MB on RAM-constrained
+// hosts (the whole response is buffered in memory — streaming-to-disk is the long-term fix).
+const MAX_RESPONSE_SIZE = (parseInt(process.env.MUADDIB_MAX_RESPONSE_MB, 10) || 512) * 1024 * 1024;
+const MAX_ENTRY_UNCOMPRESSED = 50 * 1024 * 1024;   // 50MB per zip entry
+const MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024;   // 500MB total budget per zip
 
 function fetchJSON(url, options = {}, redirectCount = 0) {
   return new Promise((resolve, reject) => {
@@ -245,63 +334,6 @@ function fetchText(url, redirectCount = 0) {
   });
 }
 
-function fetchBuffer(url, redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const reqOptions = {
-      hostname: urlObj.hostname,
-      path: urlObj.pathname + urlObj.search,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'MUADDIB-Scanner/3.0'
-      }
-    };
-
-    const req = https.request(reqOptions, (res) => {
-      if ([301, 302, 307, 308].includes(res.statusCode)) {
-        res.resume(); // Drain response body before following redirect
-        if (redirectCount >= MAX_REDIRECTS) {
-          reject(new Error('Too many redirects'));
-          return;
-        }
-        const redirectUrl = res.headers.location;
-        if (!isAllowedRedirect(redirectUrl)) {
-          reject(new Error('Unauthorized redirect to: ' + redirectUrl));
-          return;
-        }
-        fetchBuffer(redirectUrl, redirectCount + 1).then(resolve).catch(reject);
-        return;
-      }
-
-      if (res.statusCode !== 200) {
-        res.resume(); // Drain response body on error
-        reject(new Error('HTTP ' + res.statusCode));
-        return;
-      }
-
-      const chunks = [];
-      let received = 0;
-      res.on('data', chunk => {
-        received += chunk.length;
-        if (received > MAX_RESPONSE_SIZE) {
-          req.destroy();
-          reject(new Error('Response exceeded maximum size'));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    });
-
-    req.on('error', reject);
-    req.setTimeout(120000, () => {
-      req.destroy();
-      reject(new Error('Timeout'));
-    });
-
-    req.end();
-  });
-}
 
 /**
  * Download a large file with spinner progress (npm/ora style).
@@ -309,6 +341,7 @@ function fetchBuffer(url, redirectCount = 0) {
  */
 function fetchBufferWithProgress(url, label, redirectCount = 0) {
   return new Promise((resolve, reject) => {
+    let spinner = null;
     const urlObj = new URL(url);
     const reqOptions = {
       hostname: urlObj.hostname,
@@ -346,7 +379,7 @@ function fetchBufferWithProgress(url, label, redirectCount = 0) {
       const chunks = [];
       let received = 0;
 
-      const spinner = new Spinner();
+      spinner = new Spinner();
       spinner.start('Downloading ' + label + '...');
 
       res.on('data', (chunk) => {
@@ -373,9 +406,13 @@ function fetchBufferWithProgress(url, label, redirectCount = 0) {
       });
     });
 
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (spinner) spinner.fail('Download failed: ' + err.message);
+      reject(err);
+    });
     req.setTimeout(300000, () => {
       req.destroy();
+      if (spinner) spinner.fail('Download timed out');
       reject(new Error('Timeout downloading ' + label));
     });
 
@@ -403,6 +440,7 @@ function createFreshness(source, confidence) {
  */
 function extractVersions(affected) {
   const versions = new Set();
+  let hasUnboundedRange = false;
 
   if (affected.versions && affected.versions.length > 0) {
     for (const v of affected.versions) {
@@ -414,7 +452,16 @@ function extractVersions(affected) {
     for (const range of affected.ranges) {
       if (range.events) {
         for (const event of range.events) {
-          if (event.introduced && event.introduced !== '0') {
+          if (event.introduced === '0') {
+            // "introduced": "0" with no "fixed" = all versions malicious (wildcard).
+            // This is the standard OSV format used by Amazon Inspector bulk imports
+            // (tea.xyz campaign, 150K+ packages). Without this, these entries are
+            // silently dropped and the IOC database loses ~185K packages.
+            const hasFixed = range.events.some(e => e.fixed);
+            if (!hasFixed) {
+              hasUnboundedRange = true;
+            }
+          } else if (event.introduced) {
             versions.add(event.introduced);
           }
         }
@@ -422,7 +469,16 @@ function extractVersions(affected) {
     }
   }
 
-  return versions.size > 0 ? [...versions] : ['*'];
+  // Wildcard: unbounded range (introduced=0, no fixed) and no explicit versions
+  if (versions.size === 0 && hasUnboundedRange) {
+    return ['*'];
+  }
+
+  if (versions.size === 0) {
+    _noVersionSkipCount++;
+    return [];
+  }
+  return [...versions];
 }
 
 /**
@@ -479,23 +535,31 @@ async function scrapeShaiHuludDetector() {
       // Extract packages — one IOC per version for correct matching
       const pkgList = data.packages || [];
       for (const pkg of pkgList) {
-        const versions = pkg.affectedVersions || ['*'];
-        for (const ver of versions) {
-          packages.push({
-            id: `SHAI-HULUD-${pkg.name}-${ver}`,
-            name: pkg.name,
-            version: ver,
-            severity: pkg.severity || 'critical',
-            confidence: 'high',
-            source: 'shai-hulud-detector',
-            description: 'Compromised by Shai-Hulud 2.0 supply chain attack',
-            references: ['https://github.com/gensecaihq/Shai-Hulud-2.0-Detector'],
-            mitre: 'T1195.002',
-            freshness: createFreshness('gensecai', 'high')
-          });
+        const versions = pkg.affectedVersions || [];
+        if (versions.length === 0) continue; // Skip packages with no version info — avoids false wildcard
+        for (const rawVer of versions) {
+          // Sanitize: split comma-separated version strings (e.g. "4.18.1, 5.11.3")
+          const splitVersions = rawVer && rawVer.includes(',')
+            ? rawVer.split(',').map(v => v.trim()).filter(Boolean)
+            : [rawVer];
+          for (const ver of splitVersions) {
+            if (!ver) continue;
+            packages.push({
+              id: `SHAI-HULUD-${pkg.name}-${ver}`,
+              name: pkg.name,
+              version: ver,
+              severity: pkg.severity || 'critical',
+              confidence: 'high',
+              source: 'shai-hulud-detector',
+              description: 'Compromised by Shai-Hulud 2.0 supply chain attack',
+              references: ['https://github.com/gensecaihq/Shai-Hulud-2.0-Detector'],
+              mitre: 'T1195.002',
+              freshness: createFreshness('gensecai', 'high')
+            });
+          }
         }
       }
-      
+
       // Extract hashes
       if (data.indicators && data.indicators.fileHashes) {
         const fileHashes = data.indicators.fileHashes;
@@ -539,25 +603,32 @@ async function scrapeDatadogIOCs() {
 
       for (const parts of rows) {
         const name = parts[0] || '';
-        const versions = parts[1] || '*';
+        const versionsStr = parts[1] || '*';
         const vendors = parts[2] || 'datadog';
 
         if (name && name !== 'package_name' && name !== 'name') {
-          packages.push({
-            id: `DATADOG-${name}`,
-            name: name,
-            version: versions || '*',
-            severity: 'critical',
-            confidence: 'high',
-            source: 'datadog-consolidated',
-            description: `Compromised package (sources: ${vendors})`,
-            references: ['https://securitylabs.datadoghq.com/articles/shai-hulud-2.0-npm-worm/'],
-            mitre: 'T1195.002',
-            freshness: createFreshness('datadog', 'high')
-          });
+          // Split comma-separated multi-version strings (e.g. "4.18.1, 5.11.3")
+          const versionList = versionsStr.includes(',')
+            ? versionsStr.split(',').map(v => v.trim()).filter(Boolean)
+            : [versionsStr];
+          for (const ver of versionList) {
+            if (!ver || ver === '*') continue; // Skip wildcard fallbacks — avoids false positive cascade
+            packages.push({
+              id: `DATADOG-${name}`,
+              name: name,
+              version: ver,
+              severity: 'critical',
+              confidence: 'high',
+              source: 'datadog-consolidated',
+              description: `Compromised package (sources: ${vendors})`,
+              references: ['https://securitylabs.datadoghq.com/articles/shai-hulud-2.0-npm-worm/'],
+              mitre: 'T1195.002',
+              freshness: createFreshness('datadog', 'high')
+            });
+          }
         }
       }
-      console.log(`[SCRAPER]   ${packages.length} packages (consolidated)`);
+      console.log(`[SCRAPER]   ${packages.length} IOC entries (consolidated)`);
     }
     
     // DataDog specific file
@@ -623,11 +694,11 @@ async function scrapeOSSFMaliciousPackages(knownIds) {
       return packages;
     }
 
-    // Incremental: compare tree SHA
+    // Incremental: compare tree SHA (stored in ~/.muaddib/data/ to persist across npm updates)
     const treeSha = data.sha;
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    const shaFile = path.join(dataDir, '.ossf-tree-sha');
+    const homeDir = path.dirname(HOME_IOC_FILE);
+    if (!fs.existsSync(homeDir)) fs.mkdirSync(homeDir, { recursive: true });
+    const shaFile = path.join(homeDir, '.ossf-tree-sha');
     let lastSha = null;
     try { lastSha = fs.readFileSync(shaFile, 'utf8').trim(); } catch {}
 
@@ -662,6 +733,7 @@ async function scrapeOSSFMaliciousPackages(knownIds) {
       fetchSpinner.start('Fetching OSSF entries... 0/' + toFetch.length);
     }
 
+    let failedFetches = 0;
     for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
       const batch = toFetch.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(batch.map(function(entry) {
@@ -670,7 +742,7 @@ async function scrapeOSSFMaliciousPackages(knownIds) {
       }));
 
       for (const result of results) {
-        if (!result || result.status !== 200 || !result.data) continue;
+        if (!result || result.status !== 200 || !result.data) { failedFetches++; continue; }
         const parsed = parseOSVEntry(result.data, 'ossf-malicious');
         for (const p of parsed) packages.push(p);
       }
@@ -689,8 +761,16 @@ async function scrapeOSSFMaliciousPackages(knownIds) {
       fetchSpinner.succeed('Fetched OSSF entries: ' + packages.length + ' packages');
     }
 
-    // Save tree SHA for next incremental run
-    try { fs.writeFileSync(shaFile, treeSha); } catch {}
+    // Save tree SHA for next incremental run — only if every entry was fetched.
+    // Persisting the SHA after partial fetches (e.g. GitHub rate-limiting the raw batches)
+    // marks the failed entries as "done": subsequent runs skip everything until the next
+    // OSSF commit, silently losing IOCs. On partial failure, keep the old SHA so the next
+    // run retries the delta.
+    if (failedFetches === 0) {
+      try { fs.writeFileSync(shaFile, treeSha); } catch {}
+    } else {
+      console.log('[SCRAPER]   ' + failedFetches + ' OSSF fetches failed — tree SHA not persisted, next run will retry');
+    }
   } catch (e) {
     console.log('[SCRAPER]   Error: ' + e.message);
   }
@@ -718,38 +798,58 @@ async function scrapeOSVDataDump() {
 
     let malCount = 0;
     let skippedCount = 0;
+    let totalUncompressed = 0;
 
     const spinner = new Spinner();
-    spinner.start('Parsing npm entries... 0/' + total);
+    try {
+      spinner.start('Parsing npm entries... 0/' + total);
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const name = entry.entryName;
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const name = entry.entryName;
 
-      // Only process MAL-*.json files (malware), skip GHSA-*, CVE-*, PYSEC-* etc.
-      if (!name.startsWith('MAL-') || !name.endsWith('.json')) {
-        skippedCount++;
-      } else {
-        try {
-          const content = entry.getData().toString('utf8');
-          const vuln = JSON.parse(content);
-          const parsed = parseOSVEntry(vuln, 'osv-malicious');
-          for (const p of parsed) packages.push(p);
+        // Only process MAL-*.json files (malware), skip GHSA-*, CVE-*, PYSEC-* etc.
+        if (!name.startsWith('MAL-') || !name.endsWith('.json')) {
+          skippedCount++;
+        } else {
+          // Zip bomb protection: check declared uncompressed size
+          const entrySize = entry.header ? entry.header.size : 0;
+          if (entrySize > MAX_ENTRY_UNCOMPRESSED) {
+            console.warn(`[WARN] Zip bomb protection: skipping oversized entry ${name} (${entrySize} bytes)`);
+            skippedCount++;
+            continue;
+          }
+          totalUncompressed += entrySize;
+          if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED) {
+            console.warn(`[WARN] Zip bomb protection: total uncompressed budget exceeded at entry ${name}, stopping`);
+            break;
+          }
 
-          // Track known IDs so OSSF can skip them
-          knownIds.add(vuln.id || path.basename(name, '.json'));
-          malCount++;
-        } catch {
-          // Skip unparseable entries
+          try {
+            const content = entry.getData().toString('utf8');
+            const vuln = JSON.parse(content);
+            const parsed = parseOSVEntry(vuln, 'osv-malicious');
+            for (const p of parsed) packages.push(p);
+
+            // Track known IDs so OSSF can skip them
+            knownIds.add(vuln.id || path.basename(name, '.json'));
+            malCount++;
+          } catch {
+            console.warn(`[WARN] Skipping unparseable entry: ${name}`);
+          }
+        }
+
+        if ((i + 1) % 1000 === 0 || i === entries.length - 1) {
+          spinner.update('Parsing npm entries... ' + (i + 1) + '/' + total);
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
 
-      if ((i + 1) % 1000 === 0 || i === entries.length - 1) {
-        spinner.update('Parsing npm entries... ' + (i + 1) + '/' + total);
-      }
+      spinner.succeed('Parsed npm entries: ' + malCount + ' MAL-* (' + skippedCount + ' skipped) \u2192 ' + packages.length + ' packages');
+    } catch (innerErr) {
+      spinner.fail('Parsing npm entries failed');
+      throw innerErr;
     }
-
-    spinner.succeed('Parsed npm entries: ' + malCount + ' MAL-* (' + skippedCount + ' skipped) \u2192 ' + packages.length + ' packages');
   } catch (e) {
     console.log('[SCRAPER]   Error: ' + e.message);
   }
@@ -774,35 +874,55 @@ async function scrapeOSVPyPIDataDump() {
 
     let malCount = 0;
     let skippedCount = 0;
+    let totalUncompressed = 0;
 
     const spinner = new Spinner();
-    spinner.start('Parsing PyPI entries... 0/' + total);
+    try {
+      spinner.start('Parsing PyPI entries... 0/' + total);
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const name = entry.entryName;
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const name = entry.entryName;
 
-      // Only process MAL-*.json files (malware)
-      if (!name.startsWith('MAL-') || !name.endsWith('.json')) {
-        skippedCount++;
-      } else {
-        try {
-          const content = entry.getData().toString('utf8');
-          const vuln = JSON.parse(content);
-          const parsed = parseOSVEntry(vuln, 'osv-malicious-pypi', 'PyPI');
-          for (const p of parsed) packages.push(p);
-          malCount++;
-        } catch {
-          // Skip unparseable entries
+        // Only process MAL-*.json files (malware)
+        if (!name.startsWith('MAL-') || !name.endsWith('.json')) {
+          skippedCount++;
+        } else {
+          // Zip bomb protection: check declared uncompressed size
+          const entrySize = entry.header ? entry.header.size : 0;
+          if (entrySize > MAX_ENTRY_UNCOMPRESSED) {
+            console.warn(`[WARN] Zip bomb protection: skipping oversized entry ${name} (${entrySize} bytes)`);
+            skippedCount++;
+            continue;
+          }
+          totalUncompressed += entrySize;
+          if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED) {
+            console.warn(`[WARN] Zip bomb protection: total uncompressed budget exceeded at entry ${name}, stopping`);
+            break;
+          }
+
+          try {
+            const content = entry.getData().toString('utf8');
+            const vuln = JSON.parse(content);
+            const parsed = parseOSVEntry(vuln, 'osv-malicious-pypi', 'PyPI');
+            for (const p of parsed) packages.push(p);
+            malCount++;
+          } catch {
+            console.warn(`[WARN] Skipping unparseable entry: ${name}`);
+          }
+        }
+
+        if ((i + 1) % 1000 === 0 || i === entries.length - 1) {
+          spinner.update('Parsing PyPI entries... ' + (i + 1) + '/' + total);
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
 
-      if ((i + 1) % 1000 === 0 || i === entries.length - 1) {
-        spinner.update('Parsing PyPI entries... ' + (i + 1) + '/' + total);
-      }
+      spinner.succeed('Parsed PyPI entries: ' + malCount + ' MAL-* (' + skippedCount + ' skipped) \u2192 ' + packages.length + ' packages');
+    } catch (innerErr) {
+      spinner.fail('Parsing PyPI entries failed');
+      throw innerErr;
     }
-
-    spinner.succeed('Parsed PyPI entries: ' + malCount + ' MAL-* (' + skippedCount + ' skipped) \u2192 ' + packages.length + ' packages');
   } catch (e) {
     console.log('[SCRAPER]   Error: ' + e.message);
   }
@@ -810,186 +930,30 @@ async function scrapeOSVPyPIDataDump() {
   return packages;
 }
 
-// ============================================
-// SOURCE 4: GitHub Advisory Database (Malware)
-// ============================================
-async function scrapeGitHubAdvisory() {
-  console.log('[SCRAPER] GitHub Advisory Database (malware)...');
-  const packages = [];
-  
-  try {
-    const resp = await fetchJSON('https://api.osv.dev/v1/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: { package: { ecosystem: 'npm' } }
-    });
-    
-    if (resp.status === 200 && resp.data && resp.data.vulns) {
-      for (const vuln of resp.data.vulns) {
-        // Filter GHSA with malware mention
-        if (vuln.id && vuln.id.startsWith('GHSA-')) {
-          const summary = (vuln.summary || '').toLowerCase();
-          const details = (vuln.details || '').toLowerCase();
-          const isMalware = summary.includes('malware') || 
-                          summary.includes('malicious') ||
-                          details.includes('malware') ||
-                          details.includes('malicious') ||
-                          summary.includes('backdoor') ||
-                          summary.includes('trojan');
-          
-          if (isMalware) {
-            for (const affected of vuln.affected || []) {
-              if (affected.package && affected.package.ecosystem === 'npm') {
-                packages.push({
-                  id: vuln.id,
-                  name: affected.package.name,
-                  version: '*',
-                  severity: 'critical',
-                  confidence: 'high',
-                  source: 'github-advisory',
-                  description: (vuln.summary || 'Malicious package').slice(0, 200),
-                  references: ['https://github.com/advisories/' + vuln.id],
-                  mitre: 'T1195.002',
-                  freshness: createFreshness('github-advisory', 'high')
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    console.log(`[SCRAPER]   ${packages.length} packages`);
-  } catch (e) {
-    console.log(`[SCRAPER]   Error: ${e.message}`);
-  }
-  
-  return packages;
-}
-
-// ============================================
-// SOURCE 5: Static IOCs (Socket, Phylum, npm removed)
-// Local file maintained manually
-// ============================================
-async function scrapeStaticIOCs() {
-  console.log('[SCRAPER] Static IOCs (local file)...');
-  const packages = [];
-  const staticIOCs = loadStaticIOCs();
-  
-  // Socket.dev reports
-  for (const pkg of staticIOCs.socket || []) {
-    packages.push({
-      id: `SOCKET-${pkg.name}`,
-      name: pkg.name,
-      version: pkg.version || '*',
-      severity: pkg.severity || 'critical',
-      confidence: 'high',
-      source: 'socket-dev',
-      description: pkg.description || 'Malicious package reported by Socket.dev',
-      references: ['https://socket.dev/npm/package/' + pkg.name],
-      mitre: 'T1195.002',
-      freshness: createFreshness('socket', 'high')
-    });
-  }
-  
-  // Phylum Research
-  for (const pkg of staticIOCs.phylum || []) {
-    packages.push({
-      id: `PHYLUM-${pkg.name}`,
-      name: pkg.name,
-      version: pkg.version || '*',
-      severity: pkg.severity || 'critical',
-      confidence: 'high',
-      source: 'phylum',
-      description: pkg.description || 'Malicious package reported by Phylum Research',
-      references: ['https://blog.phylum.io'],
-      mitre: 'T1195.002',
-      freshness: createFreshness('phylum', 'high')
-    });
-  }
-  
-  // npm removed packages
-  for (const pkg of staticIOCs.npmRemoved || []) {
-    packages.push({
-      id: `NPM-REMOVED-${pkg.name}`,
-      name: pkg.name,
-      version: pkg.version || '*',
-      severity: 'critical',
-      confidence: 'high',
-      source: 'npm-removed',
-      description: 'Removed from npm: ' + (pkg.reason || 'security violation'),
-      references: ['https://www.npmjs.com/policies/security'],
-      mitre: 'T1195.002',
-      freshness: createFreshness('npm-removed', 'medium')
-    });
-  }
-  
-  console.log(`[SCRAPER]   ${packages.length} packages`);
-  return packages;
-}
-
-// ============================================
-// SOURCE 6: Snyk Known Malware
-// Historical attacks database
-// ============================================
-async function scrapeSnykMalware() {
-  console.log('[SCRAPER] Snyk Malware DB...');
-  const packages = [];
-  
-  const knownSnykMalware = [
-    { name: 'event-stream', version: '3.3.6', description: 'Flatmap-stream backdoor (2018)' },
-    { name: 'flatmap-stream', version: '*', description: 'Malicious dependency of event-stream' },
-    { name: 'eslint-scope', version: '3.7.2', description: 'Credential theft (2018)' },
-    { name: 'eslint-config-eslint', version: '*', description: 'Credential theft (2018)' },
-    { name: 'getcookies', version: '*', description: 'Backdoor malware' },
-    { name: 'mailparser', version: '2.3.0', description: 'Compromised version' },
-    { name: 'node-ipc', version: '10.1.1', description: 'Protestware - file deletion' },
-    { name: 'node-ipc', version: '10.1.2', description: 'Protestware - file deletion' },
-    { name: 'node-ipc', version: '10.1.3', description: 'Protestware - file deletion' },
-    { name: 'colors', version: '1.4.1', description: 'Protestware - infinite loop' },
-    { name: 'colors', version: '1.4.2', description: 'Protestware - infinite loop' },
-    { name: 'faker', version: '6.6.6', description: 'Protestware - breaking change' },
-    { name: 'ua-parser-js', version: '0.7.29', description: 'Cryptominer injection' },
-    { name: 'ua-parser-js', version: '0.8.0', description: 'Cryptominer injection' },
-    { name: 'ua-parser-js', version: '1.0.0', description: 'Cryptominer injection' },
-    { name: 'coa', version: '2.0.3', description: 'Malicious version' },
-    { name: 'coa', version: '2.0.4', description: 'Malicious version' },
-    { name: 'coa', version: '2.1.1', description: 'Malicious version' },
-    { name: 'coa', version: '2.1.3', description: 'Malicious version' },
-    { name: 'coa', version: '3.0.1', description: 'Malicious version' },
-    { name: 'coa', version: '3.1.3', description: 'Malicious version' },
-    { name: 'rc', version: '1.2.9', description: 'Malicious version' },
-    { name: 'rc', version: '1.3.9', description: 'Malicious version' },
-    { name: 'rc', version: '2.3.9', description: 'Malicious version' },
-  ];
-  
-  for (const pkg of knownSnykMalware) {
-    packages.push({
-      id: ('SNYK-' + pkg.name + '-' + pkg.version).replace(/[^a-zA-Z0-9-]/g, '-'),
-      name: pkg.name,
-      version: pkg.version,
-      severity: 'critical',
-      confidence: 'high',
-      source: 'snyk-known',
-      description: pkg.description,
-      references: ['https://snyk.io/advisor'],
-      mitre: 'T1195.002',
-      freshness: createFreshness('snyk', 'high')
-    });
-  }
-  
-  console.log(`[SCRAPER]   ${packages.length} packages`);
-  return packages;
-}
+// SOURCE 4 (GitHub Advisory Database) removed 2026-07 (GAP-2): it POSTed
+// api.osv.dev/v1/query with `{ package: { ecosystem: 'npm' } }` — no package name,
+// which the OSV /v1/query API rejects with HTTP 400 on every call. It therefore
+// returned 0 packages permanently while logging as a normal completion (fictional
+// coverage). Empirically verified that the GHSA-malware it targeted is already
+// 100% covered by the OSV MAL- dump (153/153 pre-snapshot npm GHSA advisories
+// present in the IOC store), so its removal loses no coverage. The GHSA poller
+// (src/ioc/ghsa-poller.js) tracks the coverage denominator independently.
 
 // ============================================
 // MAIN SCRAPER
 // ============================================
 async function runScraper() {
   console.log('\n' + '='.repeat(60));
-  console.log('  MUAD\'DIB IOC Scraper v4.0');
-  console.log('  OSV + OSSF + GenSecAI + DataDog + Snyk');
+  console.log('  MUAD\'DIB IOC Scraper v' + PKG_VERSION);
+  console.log('  OSV + OSSF + GitHub Advisory + GenSecAI + DataDog + Aikido + OSM');
   console.log('='.repeat(60) + '\n');
+
+  // Reset aggregated warning counters
+  _noVersionSkipCount = 0;
+  _invalidVersionSkipCount = 0;
+  _invalidVersionSamples = [];
+  _invalidNameSkipCount = 0;
+  _invalidNameSamples = [];
 
   // Create data directory if needed
   const dataDir = path.dirname(IOC_FILE);
@@ -1004,9 +968,18 @@ async function runScraper() {
     throw new Error(`Data directory is not writable: ${dataDir}`);
   }
 
-  // Load existing IOCs
+  // Load existing IOCs (check ~/.muaddib/data/ first, then local)
   let existingIOCs = { packages: [], pypi_packages: [], hashes: [], markers: [], files: [] };
-  if (fs.existsSync(IOC_FILE)) {
+  if (fs.existsSync(HOME_IOC_FILE)) {
+    try {
+      existingIOCs = JSON.parse(fs.readFileSync(HOME_IOC_FILE, 'utf8'));
+      if (!existingIOCs.pypi_packages) existingIOCs.pypi_packages = [];
+      console.log('[INFO] Loaded existing IOCs from ' + HOME_IOC_FILE);
+    } catch {
+      console.log('[WARN] Home IOCs file corrupted, trying local...');
+    }
+  }
+  if (existingIOCs.packages.length === 0 && fs.existsSync(IOC_FILE)) {
     try {
       existingIOCs = JSON.parse(fs.readFileSync(IOC_FILE, 'utf8'));
       if (!existingIOCs.pypi_packages) existingIOCs.pypi_packages = [];
@@ -1015,11 +988,28 @@ async function runScraper() {
     }
   }
 
+  // Fresh-install fallback: the full iocs.json is gitignored / not shipped in the
+  // npm package, but the compact baseline IS. Seed from it (the same path that
+  // `muaddib update` uses) so a first scrape augments the shipped baseline instead
+  // of appearing to start from zero and re-downloading everything.
+  let seededFromCompact = false;
+  if (existingIOCs.packages.length === 0 && fs.existsSync(COMPACT_IOC_FILE)) {
+    try {
+      const compactData = JSON.parse(fs.readFileSync(COMPACT_IOC_FILE, 'utf8'));
+      existingIOCs = expandCompactIOCs(compactData);
+      if (!existingIOCs.pypi_packages) existingIOCs.pypi_packages = [];
+      seededFromCompact = true;
+    } catch {
+      console.log('[WARN] Compact IOC baseline unreadable, starting fresh');
+    }
+  }
+
   const initialCount = existingIOCs.packages.length;
   const initialPyPICount = existingIOCs.pypi_packages.length;
   const initialHashCount = existingIOCs.hashes ? existingIOCs.hashes.length : 0;
 
-  console.log('[INFO] Existing IOCs: ' + initialCount + ' packages, ' + initialHashCount + ' hashes\n');
+  const baselineLabel = seededFromCompact ? 'Baseline IOCs loaded (shipped compact)' : 'Existing IOCs';
+  console.log('[INFO] ' + baselineLabel + ': ' + initialCount + ' packages, ' + initialHashCount + ' hashes\n');
 
   // Phase 1: OSV data dump first (bulk, primary source)
   // This returns knownIds so OSSF can skip already-known entries
@@ -1031,19 +1021,34 @@ async function runScraper() {
     scrapeShaiHuludDetector(),
     scrapeDatadogIOCs(),
     scrapeOSSFMaliciousPackages(osvResult.knownIds),
-    scrapeGitHubAdvisory(),
-    scrapeStaticIOCs(),
-    scrapeSnykMalware(),
-    scrapeOSVPyPIDataDump()
+    scrapeOSVPyPIDataDump(),
+    scrapeAikidoMalwareFeed(),
+    scrapeOSMQueryLatest()
   ]);
 
   const shaiHuludResult = results[0];
   const datadogResult = results[1];
   const ossfPackages = results[2];
-  const githubPackages = results[3];
-  const staticPackages = results[4];
-  const snykPackages = results[5];
-  const pypiPackages = results[6];
+  const pypiPackages = results[3];
+  const aikidoResult = results[4];
+  const osmResult = results[5];
+
+  // Log aggregated warnings
+  if (_noVersionSkipCount > 0) {
+    console.log('[SCRAPER] WARN: ' + _noVersionSkipCount + ' packages skipped (no version info, wildcard fallback avoided)');
+  }
+  if (_invalidVersionSkipCount > 0) {
+    const samples = _invalidVersionSamples.length > 0
+      ? ' (samples: ' + _invalidVersionSamples.join(', ') + ')'
+      : '';
+    console.log('[SCRAPER] WARN: ' + _invalidVersionSkipCount + ' entries skipped (malformed version)' + samples);
+  }
+  if (_invalidNameSkipCount > 0) {
+    const nameSamples = _invalidNameSamples.length > 0
+      ? ' (samples: ' + _invalidNameSamples.join(', ') + ')'
+      : '';
+    console.log('[SCRAPER] WARN: ' + _invalidNameSkipCount + ' invalid package names skipped' + nameSamples);
+  }
 
   // Merge all scraped packages
   const allPackages = [
@@ -1051,9 +1056,8 @@ async function runScraper() {
     ...shaiHuludResult.packages,
     ...datadogResult.packages,
     ...ossfPackages,
-    ...githubPackages,
-    ...staticPackages,
-    ...snykPackages
+    ...aikidoResult.packages,
+    ...osmResult.packages
   ];
 
   // Merge all hashes
@@ -1064,35 +1068,87 @@ async function runScraper() {
 
   // Smart deduplication: build map of best entry per key
   // For duplicates, keep the one with highest confidence, then most recent date
+  const dedupSpinner = new Spinner();
+  dedupSpinner.start('Deduplicating ' + allPackages.length + ' npm + ' + (pypiPackages.length + (aikidoResult.pypi_packages || []).length + (osmResult.pypi_packages || []).length) + ' PyPI entries...');
   const dedupMap = new Map();
 
-  // Seed with existing IOCs
+  // Seed with existing IOCs (with sanitization of stale comma-in-version entries)
   for (const pkg of existingIOCs.packages) {
+    // Split comma-separated version strings into individual entries
+    if (pkg.version && pkg.version.includes(',')) {
+      const parts = pkg.version.split(',').map(v => v.trim()).filter(Boolean);
+      for (const v of parts) {
+        const key = pkg.name + '@' + v;
+        if (!dedupMap.has(key)) {
+          dedupMap.set(key, Object.assign({}, pkg, { version: v }));
+        }
+      }
+      continue;
+    }
+    // Skip wildcard entries for NEVER_WILDCARD packages in existing data
+    if (pkg.version === '*' && NEVER_WILDCARD.has(pkg.name)) continue;
     const key = pkg.name + '@' + pkg.version;
     dedupMap.set(key, pkg);
   }
 
-  // Merge new IOCs with smart replacement
+  // Merge new IOCs with smart replacement (with input validation).
+  // Source-aware: each entry accumulates a `sources: [{name, added_at}]` array
+  // tracking every feed that reported this (name, version). A package
+  // reported by >= 3 distinct sources is treated as confidence-max
+  // (used by `getSourceConfidence` for webhook gating).
   let addedPackages = 0;
   let upgradedPackages = 0;
+  function appendSource(target, pkg) {
+    if (!Array.isArray(target.sources)) target.sources = [];
+    const newSrc = pkg.source || (pkg.freshness && pkg.freshness.source) || 'unknown';
+    if (!target.sources.some(s => s.name === newSrc)) {
+      target.sources.push({
+        name: newSrc,
+        added_at: (pkg.freshness && pkg.freshness.added_at) || pkg.published || new Date().toISOString()
+      });
+    }
+  }
+  function seedSources(pkg) {
+    if (!Array.isArray(pkg.sources)) {
+      const src = pkg.source || (pkg.freshness && pkg.freshness.source) || 'unknown';
+      pkg.sources = [{
+        name: src,
+        added_at: (pkg.freshness && pkg.freshness.added_at) || pkg.published || new Date().toISOString()
+      }];
+    }
+  }
   for (const pkg of allPackages) {
+    if (!validateIOCEntry(pkg.name, pkg.version, 'npm')) {
+      continue;
+    }
+    // Skip wildcard entries for packages that must stay version-specific
+    if (pkg.version === '*' && NEVER_WILDCARD.has(pkg.name)) {
+      continue;
+    }
     const key = pkg.name + '@' + pkg.version;
     if (!dedupMap.has(key)) {
+      seedSources(pkg);
       dedupMap.set(key, pkg);
       addedPackages++;
     } else {
       const existing = dedupMap.get(key);
+      // Always accumulate source attribution before any replacement decision.
+      seedSources(existing);
+      appendSource(existing, pkg);
       const existingConf = CONFIDENCE_ORDER[existing.confidence] || 0;
       const newConf = CONFIDENCE_ORDER[pkg.confidence] || 0;
       if (newConf > existingConf) {
-        dedupMap.set(key, pkg);
+        // Replace with the higher-confidence entry but preserve the merged sources list
+        const mergedSources = existing.sources;
+        dedupMap.set(key, Object.assign({}, pkg, { sources: mergedSources }));
         upgradedPackages++;
       } else if (newConf === existingConf) {
         // Same confidence: keep most recent
         const existingDate = existing.published || (existing.freshness && existing.freshness.added_at) || '';
         const newDate = pkg.published || (pkg.freshness && pkg.freshness.added_at) || '';
         if (newDate > existingDate) {
-          dedupMap.set(key, pkg);
+          const mergedSources = existing.sources;
+          dedupMap.set(key, Object.assign({}, pkg, { sources: mergedSources }));
           upgradedPackages++;
         }
       }
@@ -1109,17 +1165,26 @@ async function runScraper() {
     pypiDedupMap.set(key, pkg);
   }
   let addedPyPIPackages = 0;
-  for (const pkg of pypiPackages) {
+  // Merge Aikido PyPI feed into the same loop
+  const allPyPIPackages = pypiPackages.concat(aikidoResult.pypi_packages || [], osmResult.pypi_packages || []);
+  for (const pkg of allPyPIPackages) {
+    if (!validateIOCEntry(pkg.name, pkg.version, 'pypi')) {
+      continue;
+    }
     const key = pkg.name + '@' + pkg.version;
     if (!pypiDedupMap.has(key)) {
+      seedSources(pkg);
       pypiDedupMap.set(key, pkg);
       addedPyPIPackages++;
     } else {
       const existing = pypiDedupMap.get(key);
+      seedSources(existing);
+      appendSource(existing, pkg);
       const existingConf = CONFIDENCE_ORDER[existing.confidence] || 0;
       const newConf = CONFIDENCE_ORDER[pkg.confidence] || 0;
       if (newConf > existingConf) {
-        pypiDedupMap.set(key, pkg);
+        const mergedSources = existing.sources;
+        pypiDedupMap.set(key, Object.assign({}, pkg, { sources: mergedSources }));
       }
     }
   }
@@ -1157,6 +1222,8 @@ async function runScraper() {
     ];
   }
 
+  dedupSpinner.succeed('Deduplicated: ' + existingIOCs.packages.length + ' npm + ' + existingIOCs.pypi_packages.length + ' PyPI packages (' + addedPackages + ' new, ' + upgradedPackages + ' upgraded)');
+
   // Update metadata
   existingIOCs.updated = new Date().toISOString();
   existingIOCs.sources = [
@@ -1169,15 +1236,24 @@ async function runScraper() {
     'github-advisory',
     'socket-dev',
     'phylum',
-    'npm-removed',
-    'snyk-known'
+    'npm-removed'
   ];
 
-  // Save enriched (full) IOCs — atomic write via .tmp + rename
+  // Save enriched (full) IOCs — atomic write via .tmp + rename.
+  // Stringify ONCE: the pretty-printed DB is a giant string (~2x the 112MB+ file); a second
+  // stringify for the home copy used to double the peak on top of the zip buffers already in
+  // flight. The HMAC is computed here from the same string, then the string is released and
+  // the home copy reuses the file on disk (copyFileSync — no second serialization).
   const saveSpinner = new Spinner();
   saveSpinner.start('Saving IOCs...');
   const tmpIOCFile = IOC_FILE + '.tmp';
-  fs.writeFileSync(tmpIOCFile, JSON.stringify(existingIOCs, null, 2));
+  let iocHmac;
+  {
+    const iocJsonData = JSON.stringify(existingIOCs, null, 2);
+    fs.writeFileSync(tmpIOCFile, iocJsonData);
+    const { generateIOCHMAC } = require('./updater.js');
+    iocHmac = generateIOCHMAC(iocJsonData);
+  }
   fs.renameSync(tmpIOCFile, IOC_FILE);
 
   // Save compact IOCs (lightweight, shipped in npm) — atomic write
@@ -1186,7 +1262,35 @@ async function runScraper() {
   const tmpCompactFile = COMPACT_IOC_FILE + '.tmp';
   fs.writeFileSync(tmpCompactFile, JSON.stringify(compactIOCs));
   fs.renameSync(tmpCompactFile, COMPACT_IOC_FILE);
-  saveSpinner.succeed('Saved IOCs + compact format');
+
+  // Save the lean projection in lock-step with the full file (~24MB) — what
+  // scan workers load instead of the 223MB full (RSS fix). Built from the
+  // in-memory object, so no extra parse peak. See updater.js:createLeanIOCs.
+  writeLeanIOCFile(existingIOCs);
+
+  // Persist to ~/.muaddib/data/ (survives npm update)
+  saveSpinner.update('Persisting to home directory...');
+  const homeDir = path.dirname(HOME_IOC_FILE);
+  if (!fs.existsSync(homeDir)) {
+    fs.mkdirSync(homeDir, { recursive: true });
+  }
+  try {
+    const tmpHomeFile = HOME_IOC_FILE + '.tmp';
+    // Byte-identical copy of the file already written locally — no second stringify peak.
+    fs.copyFileSync(IOC_FILE, tmpHomeFile);
+    // Write HMAC before rename for consistency with updater.js (computed once above from
+    // the same serialized string the local file was written from).
+    fs.writeFileSync(HOME_IOC_FILE + '.hmac', iocHmac);
+    fs.renameSync(tmpHomeFile, HOME_IOC_FILE);
+    // Mark HMAC as initialized
+    const hmacMarker = path.join(homeDir, '.hmac-initialized');
+    if (!fs.existsSync(hmacMarker)) {
+      try { fs.writeFileSync(hmacMarker, new Date().toISOString()); } catch {}
+    }
+    saveSpinner.succeed('Saved IOCs + compact format + home directory');
+  } catch (e) {
+    saveSpinner.succeed('Saved IOCs + compact format (home dir write failed: ' + e.message + ')');
+  }
 
   // Display summary
   console.log('\n' + '='.repeat(60));
@@ -1218,12 +1322,13 @@ async function runScraper() {
     console.log('     - ' + source + ': ' + count);
   }
 
-  // Target check
+  // Sanity check: a drop vs the previously-loaded baseline is a real signal of a
+  // feed outage or a corrupted merge — surface that instead of a meaningless target.
   const total = existingIOCs.packages.length;
-  if (total >= 5000) {
-    console.log('\n  [OK] Target reached: ' + total + ' IOCs (>= 5000)');
+  if (total < initialCount) {
+    console.log('\n  [WARN] IOC count decreased: ' + total + ' (was ' + initialCount + ') — possible source outage');
   } else {
-    console.log('\n  [WARN] Target NOT reached: ' + total + ' IOCs (< 5000)');
+    console.log('\n  [OK] IOC database: ' + total + ' npm IOCs');
   }
 
   console.log('\n');
@@ -1239,7 +1344,308 @@ async function runScraper() {
   };
 }
 
-module.exports = { runScraper, scrapeShaiHuludDetector, scrapeDatadogIOCs };
+// ============================================
+// SOURCE 6: Aikido Open Source Malware Feed (npm + PyPI)
+// Free flat JSON feed at malware-list.aikido.dev. Each entry:
+//   { package_name, version, reason: 'MALWARE'|'TELEMETRY'|'PROTESTWARE' }
+// Source: https://github.com/AikidoSec/safe-chain (open-source consumer)
+// ============================================
+async function scrapeAikidoMalwareFeed() {
+  console.log('[SCRAPER] Aikido Open Source Malware Feed...');
+  const npmPackages = [];
+  const pypiPackages = [];
+
+  // npm
+  try {
+    const { status, data } = await fetchJSON('https://malware-list.aikido.dev/malware_predictions.json');
+    if (status === 200 && Array.isArray(data)) {
+      for (const entry of data) {
+        if (!entry || typeof entry.package_name !== 'string') continue;
+        // Only keep MALWARE; TELEMETRY/PROTESTWARE are policy decisions, not security
+        if (entry.reason !== 'MALWARE') continue;
+        const ver = (entry.version && entry.version !== '') ? String(entry.version) : '*';
+        npmPackages.push({
+          id: 'AIKIDO-' + entry.package_name + '-' + ver,
+          name: entry.package_name,
+          version: ver,
+          severity: 'critical',
+          confidence: 'high',
+          source: 'aikido',
+          description: 'Flagged by Aikido Open Source Malware Feed',
+          references: ['https://malware-list.aikido.dev/malware_predictions.json',
+                       'https://www.aikido.dev/code/malware-detection-in-dependencies'],
+          mitre: 'T1195.002',
+          freshness: createFreshness('aikido', 'high')
+        });
+      }
+      console.log('[SCRAPER]   ' + npmPackages.length + ' npm MALWARE entries from Aikido');
+    } else {
+      console.log('[SCRAPER]   Aikido npm feed: HTTP ' + status);
+    }
+  } catch (e) {
+    console.log('[SCRAPER]   Aikido npm error: ' + e.message);
+  }
+
+  // PyPI
+  try {
+    const { status, data } = await fetchJSON('https://malware-list.aikido.dev/malware_pypi.json');
+    if (status === 200 && Array.isArray(data)) {
+      for (const entry of data) {
+        if (!entry || typeof entry.package_name !== 'string') continue;
+        if (entry.reason !== 'MALWARE') continue;
+        const ver = (entry.version && entry.version !== '') ? String(entry.version) : '*';
+        pypiPackages.push({
+          id: 'AIKIDO-PYPI-' + entry.package_name + '-' + ver,
+          name: entry.package_name,
+          version: ver,
+          severity: 'critical',
+          confidence: 'high',
+          source: 'aikido',
+          description: 'Flagged by Aikido Open Source Malware Feed',
+          references: ['https://malware-list.aikido.dev/malware_pypi.json'],
+          mitre: 'T1195.002',
+          freshness: createFreshness('aikido', 'high')
+        });
+      }
+      console.log('[SCRAPER]   ' + pypiPackages.length + ' PyPI MALWARE entries from Aikido');
+    } else {
+      console.log('[SCRAPER]   Aikido PyPI feed: HTTP ' + status);
+    }
+  } catch (e) {
+    console.log('[SCRAPER]   Aikido PyPI error: ' + e.message);
+  }
+
+  return { packages: npmPackages, pypi_packages: pypiPackages };
+}
+
+// ============================================
+// SOURCE 7: OpenSourceMalware.com (community-verified threat intel)
+// Free tier: 60 req/min, /query-latest returns 100 most recent verified threats per
+// ecosystem. Token stored in OSM_API_TOKEN env var (NEVER hardcoded — public repo).
+// API: https://api.opensourcemalware.com/functions/v1/query-latest?ecosystem={npm|pypi}
+// Docs: https://docs.opensourcemalware.com/api/query-latest.md
+// Rate-limit ref: https://docs.opensourcemalware.com/api/rate-limits.md
+// ============================================
+async function scrapeOSMQueryLatest() {
+  console.log('[SCRAPER] OpenSourceMalware.com query-latest...');
+  const token = process.env.OSM_API_TOKEN;
+  if (!token) {
+    console.log('[SCRAPER]   OSM_API_TOKEN not set — skipping (graceful, no error).');
+    return { packages: [], pypi_packages: [] };
+  }
+  // Defensive token shape check (don't log the value)
+  if (typeof token !== 'string' || !token.startsWith('osm_') || token.length < 16) {
+    console.log('[SCRAPER]   OSM_API_TOKEN malformed (expected osm_<chars>) — skipping.');
+    return { packages: [], pypi_packages: [] };
+  }
+
+  const npmPackages = [];
+  const pypiPackages = [];
+  const headers = { Authorization: 'Bearer ' + token };
+
+  // Map OSM severity_level (low/medium/high/critical) to MUAD'DIB severity (lowercase).
+  // OSM doesn't always populate severity; default to 'high' (verified threats are high-confidence by definition).
+  function mapSeverity(s) {
+    if (!s || typeof s !== 'string') return 'high';
+    const v = s.toLowerCase().trim();
+    if (v === 'low' || v === 'medium' || v === 'high' || v === 'critical') return v;
+    return 'high';
+  }
+
+  function buildReferences(threat, ecosystem) {
+    const refs = [];
+    if (threat.osv_advisory_url && typeof threat.osv_advisory_url === 'string') refs.push(threat.osv_advisory_url);
+    if (threat.ghsa_advisory_url && typeof threat.ghsa_advisory_url === 'string') refs.push(threat.ghsa_advisory_url);
+    // Canonical OSM page for this threat. Best-effort URL — if 404 it's harmless metadata.
+    if (threat.package_name) {
+      refs.push('https://opensourcemalware.com/' + ecosystem + '/' + encodeURIComponent(threat.package_name));
+    }
+    return refs;
+  }
+
+  function buildDescription(threat) {
+    const parts = [];
+    if (threat.threat_description) parts.push(String(threat.threat_description));
+    if (Array.isArray(threat.tags) && threat.tags.length > 0) {
+      parts.push('Tags: ' + threat.tags.filter(t => typeof t === 'string').join(', '));
+    }
+    if (threat.researcher) parts.push('Reporter: ' + String(threat.researcher));
+    return parts.length > 0 ? parts.join(' — ') : 'Verified by OpenSourceMalware.com community';
+  }
+
+  async function pull(ecosystem, target) {
+    try {
+      const { status, data } = await fetchJSON(
+        'https://api.opensourcemalware.com/functions/v1/query-latest?ecosystem=' + encodeURIComponent(ecosystem),
+        { headers }
+      );
+      if (status === 401 || status === 403) {
+        console.log('[SCRAPER]   OSM ' + ecosystem + ': HTTP ' + status + ' — token rejected, check OSM_API_TOKEN.');
+        return;
+      }
+      if (status !== 200) {
+        console.log('[SCRAPER]   OSM ' + ecosystem + ' feed: HTTP ' + status);
+        return;
+      }
+      if (!data || !Array.isArray(data.threats)) {
+        console.log('[SCRAPER]   OSM ' + ecosystem + ' feed: unexpected response shape (no threats[]).');
+        return;
+      }
+      let count = 0;
+      for (const t of data.threats) {
+        if (!t || typeof t.package_name !== 'string' || t.package_name.length === 0) continue;
+        // OSM verifies report_type === 'package' threats. Skip anything else (repository/url/domain).
+        // The query is filtered by ecosystem, but defensive check on registry field.
+        if (t.report_type && t.report_type !== 'package') continue;
+        // Normalize version: OSM uses free-form strings ('all', 'any', 'unknown', null, etc.)
+        // Wildcard placeholders must be MUAD'DIB's canonical '*' so the IOC matcher hits.
+        let ver = '*';
+        if (t.version_info && typeof t.version_info === 'string') {
+          const trimmed = t.version_info.trim();
+          const lc = trimmed.toLowerCase();
+          if (trimmed !== '' && lc !== 'all' && lc !== 'any' && lc !== 'unknown' && lc !== '*' && lc !== 'n/a') {
+            ver = trimmed;
+          }
+        }
+        const severity = mapSeverity(t.severity_level);
+        const addedAt = t.verified_at || t.created_at || t.first_seen || new Date().toISOString();
+        const idPrefix = ecosystem === 'pypi' ? 'OSM-PYPI-' : 'OSM-';
+        target.push({
+          id: idPrefix + t.package_name + '-' + ver,
+          name: t.package_name,
+          version: ver,
+          severity: severity,
+          confidence: 'high',
+          source: 'osm',
+          description: buildDescription(t),
+          references: buildReferences(t, ecosystem),
+          mitre: 'T1195.002',
+          freshness: {
+            added_at: addedAt,
+            source: 'osm',
+            confidence: 'high'
+          }
+        });
+        count++;
+      }
+      console.log('[SCRAPER]   ' + count + ' ' + ecosystem + ' verified threats from OSM');
+    } catch (e) {
+      // Defensive: do NOT echo any token-bearing URL or header in the error.
+      console.log('[SCRAPER]   OSM ' + ecosystem + ' error: ' + (e && e.message ? e.message : 'unknown'));
+    }
+  }
+
+  // Sequential (not parallel): keeps us well under the 60 req/min rate limit
+  // and gives clearer logs. Two ecosystems = ~200ms total.
+  await pull('npm', npmPackages);
+  await pull('pypi', pypiPackages);
+
+  return { packages: npmPackages, pypi_packages: pypiPackages };
+}
+
+// SOURCE 5 (OSV.dev Lightweight API) removed 2026-07 (GAP-2): same defect as
+// SOURCE 4 — it POSTed api.osv.dev/v1/query with no package name (`{ package:
+// { ecosystem: 'npm' } }`), which OSV rejects with HTTP 400, so it returned 0
+// MAL-* packages permanently while `muaddib update` logged "+0 OSV API" as normal.
+// It was also 100% redundant with the OSV MAL- zip dump (scrapeOSVDataDump), which
+// pulls the same MAL- npm set. The `muaddib update` light path keeps its recent-
+// malware coverage via GenSecAI + DataDog + OSM; the authoritative OSV MAL- set
+// comes from the deep `muaddib scrape`.
+
+/**
+ * Batch query OSV.dev for specific package names.
+ * Returns all MAL-* entries matching the given packages.
+ * Used by the OpenSSF benchmark script (W1).
+ * @param {string[]} packageNames - npm package names to query
+ * @returns {Promise<Array>} Parsed IOC entries with osv_id
+ */
+async function queryOSVBatch(packageNames) {
+  const BATCH_SIZE = 1000;
+  const allResults = [];
+
+  for (let i = 0; i < packageNames.length; i += BATCH_SIZE) {
+    const batch = packageNames.slice(i, i + BATCH_SIZE);
+    const queries = batch.map(function(name) {
+      return { package: { name: name, ecosystem: 'npm' } };
+    });
+
+    try {
+      const resp = await fetchJSON('https://api.osv.dev/v1/querybatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { queries: queries }
+      });
+
+      if (resp.status === 200 && resp.data && resp.data.results) {
+        for (let j = 0; j < resp.data.results.length; j++) {
+          const vulns = resp.data.results[j].vulns || [];
+          for (const vuln of vulns) {
+            if (vuln.id && vuln.id.startsWith('MAL-')) {
+              const parsed = parseOSVEntry(vuln, 'osv-batch');
+              for (const p of parsed) allResults.push(p);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log('[SCRAPER] OSV batch error (offset ' + i + '): ' + e.message);
+    }
+
+    // Courtesy delay between batches
+    if (i + BATCH_SIZE < packageNames.length) {
+      await new Promise(function(r) { setTimeout(r, 200); });
+    }
+  }
+
+  return allResults;
+}
+
+// Test helpers for aggregated warning counters
+function getNoVersionSkipCount() { return _noVersionSkipCount; }
+function resetNoVersionSkipCount() { _noVersionSkipCount = 0; }
+function getInvalidNameSkipCount() { return _invalidNameSkipCount; }
+function resetInvalidNameSkipCount() { _invalidNameSkipCount = 0; _invalidNameSamples = []; }
+
+/**
+ * Source-aware confidence: a package reported by N distinct feeds is more
+ * confident than one reported by a single source. Used by webhook gating
+ * and the /diff command to prioritize multi-confirmed alerts.
+ *
+ * Tiers:
+ *   N >= 3 → 'high'   (cross-confirmed, alert immediately)
+ *   N === 2 → 'medium' (single-corroboration, alert with sandbox confirm)
+ *   N <= 1 → 'low'    (single-feed only, log + sandbox before alert)
+ *
+ * @param {object} pkg - IOC package entry (with optional `sources` array)
+ * @returns {{ tier: 'high'|'medium'|'low', count: number, sources: string[] }}
+ */
+function getSourceConfidence(pkg) {
+  if (!pkg) return { tier: 'low', count: 0, sources: [] };
+  const sources = Array.isArray(pkg.sources) && pkg.sources.length > 0
+    ? pkg.sources.map(s => s.name || 'unknown')
+    : [pkg.source || (pkg.freshness && pkg.freshness.source) || 'unknown'];
+  const unique = Array.from(new Set(sources));
+  let tier = 'low';
+  if (unique.length >= 3) tier = 'high';
+  else if (unique.length === 2) tier = 'medium';
+  return { tier, count: unique.length, sources: unique };
+}
+
+module.exports = {
+  runScraper, scrapeShaiHuludDetector, scrapeDatadogIOCs,
+  scrapeAikidoMalwareFeed,
+  scrapeOSMQueryLatest,
+  queryOSVBatch,
+  getSourceConfidence,
+  // Pure utility functions (exported for testing)
+  parseCSVLine, parseCSV, extractVersions, parseOSVEntry,
+  createFreshness, isAllowedRedirect,
+  validateIOCEntry,
+  getNoVersionSkipCount, resetNoVersionSkipCount,
+  getInvalidNameSkipCount, resetInvalidNameSkipCount,
+  CONFIDENCE_ORDER, ALLOWED_REDIRECT_DOMAINS,
+  MAX_ENTRY_UNCOMPRESSED, MAX_TOTAL_UNCOMPRESSED
+};
 
 // Direct execution if called as CLI
 if (require.main === module) {

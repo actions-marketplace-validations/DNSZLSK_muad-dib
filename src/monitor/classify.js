@@ -1,0 +1,534 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+'use strict';
+
+const { levenshteinDistance, findPyPITyposquatMatch } = require('../scanner/typosquat.js');
+const { loadCachedIOCs } = require('../ioc/updater.js');
+
+// --- Popular npm names (used for quick typosquat check) ---
+
+const POPULAR_NPM_NAMES = [
+  'lodash', 'express', 'react', 'axios', 'chalk', 'commander', 'moment',
+  'request', 'async', 'bluebird', 'underscore', 'uuid', 'debug',
+  'webpack', 'typescript', 'eslint', 'prettier', 'jest',
+  'mongoose', 'redis', 'mongodb', 'socket.io', 'dotenv',
+  'jsonwebtoken', 'bcrypt', 'passport', 'aws-sdk', 'stripe',
+  'firebase', 'graphql', 'electron', 'puppeteer',
+  'react-native', 'next', 'nuxt', 'gatsby', 'svelte',
+  'node-fetch', 'got', 'pino', 'winston'
+];
+
+// --- Popularity pre-filter ---
+const POPULAR_THRESHOLD = 50_000; // Weekly downloads to classify as "popular"
+const DOWNLOADS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+const downloadsCache = new Map(); // key: packageName -> { downloads, fetchedAt }
+
+// --- Tarball cache retention constants ---
+const TARBALL_CACHE_DEFAULT_RETENTION_DAYS = 7;
+const TARBALL_CACHE_HIGH_RISK_RETENTION_DAYS = 30;
+
+// --- IOC match types (these are the only static-analysis types that warrant a webhook) ---
+
+const IOC_MATCH_TYPES = new Set([
+  'known_malicious_package',
+  'known_malicious_hash',
+  'pypi_malicious_package',
+  'shai_hulud_marker',
+  'shai_hulud_backdoor'
+]);
+
+// High-confidence malice types: quasi-never legitimate in benign packages.
+// When present, reputation attenuation is BYPASSED -- raw score used for webhook.
+// This prevents supply-chain compromises of established packages from being suppressed.
+const HIGH_CONFIDENCE_MALICE_TYPES = new Set([
+  'lifecycle_shell_pipe',                  // curl|sh in preinstall
+  'fetch_decrypt_exec',                    // steganographic payload chain
+  'download_exec_binary',                  // download+chmod+exec
+  'reverse_shell',                         // reverse shell (always malicious)
+  'crypto_staged_payload',                 // decrypt->eval staged payload chain
+  'crypto_exfil',                          // harvest + encrypt(RSA/AES) + network to non-benign dest (litellm/Hades)
+  'intent_credential_exfil',               // intra-file credential->network
+  'intent_command_exfil',                  // intra-file command->network
+  'cross_file_dataflow',                   // proven taint cross-modules
+  'canary_exfiltration',                   // canary sandbox exfiltrated
+  'sandbox_network_after_sensitive_read',  // compound sandbox detection
+  'sandbox_known_exfil_domain',            // known exfil/C2 domain contacted during install
+  'detached_credential_exfil',            // detached process + credential exfil (DPRK/Lazarus)
+  'node_modules_write',                    // writeFile to node_modules/ (worm propagation)
+  'npm_publish_worm',                      // exec("npm publish") (worm propagation)
+  'systemd_persistence',                   // writeFile to systemd/ or systemctl enable (CanisterWorm T1543.002)
+  'npm_token_steal',                       // exec("npm config get _authToken") (CanisterWorm findNpmTokens)
+  'root_filesystem_wipe',                  // rm -rf / (CanisterWorm kamikaze.sh wiper T1485)
+  'proc_mem_scan',                         // /proc/mem scanning (TeamPCP Trivy credential stealer)
+  'trusted_new_unknown_dependency',        // TRUSTED package added unknown/new (<7d) dependency (account takeover)
+  // v2.10.89: Security review findings — always malicious regardless of lifecycle
+  'curl_env_exfil',                        // curl/wget + env/base64 in lifecycle (exfiltration)
+  'function_constructor_require',          // new Function.constructor("require") (RCE evasion)
+  'newsletter_auto_follow',                // Baileys WhatsApp newsletter hijack
+  // v2.10.93: Security review 2026-04-10→17 findings
+  'self_destruct_eval',                    // dynamic exec + unlink __filename (csec anti-forensics)
+  // v2.10.94: MT-1 ceiling bypass for ltidi and csec under-threshold cases
+  'external_tarball_dep',                  // dep URL = tarball on third-party host (ltidi chain)
+  'function_runtime_args',                 // new Function('require','__dirname','__filename',...) pattern (csec)
+  // Mini Shai-Hulud campaign (2026-05): env var names reconstructed via
+  // String.fromCharCode() to evade static analysis. Structurally unique to malware —
+  // no legitimate code reconstructs env var names from character codes. Bypasses MT-1
+  // cap since the attack uses optionalDependencies + prepare hook (no direct lifecycle).
+  'env_charcode_reconstruction',           // fromCharCode + process.env[computed] (TeamPCP credential stealer)
+  'ide_hook_autoexec',                     // .claude/settings.json SessionStart hook, .vscode/tasks.json folderOpen (Shai-Hulud)
+  'workflow_secrets_dump',                  // toJSON(secrets) in GitHub Actions workflow (Shai-Hulud)
+  // Phantom Gyp 2026-06: binding.gyp command-substitution = install-time RCE, quasi-never legit in benign packages
+  'gyp_command_exec',
+  // Phantom Gyp compound (Phase 1b): configure-time <!(node x.js) × independently-malicious invoked file
+  'gyp_phantom_exec',
+  // electron_app_injection (MUADDIB-AST-097): install hook overwrites a THIRD-PARTY Electron app's
+  // core/.asar with injected code (payload-in-write coupling ⇒ FP≈0). Bypasses MT-1 cap like the
+  // other install-time RCE/injection markers above (node_modules_write, systemd_persistence).
+  'electron_app_injection',
+  // install_native_drop_exec (COMPOUND-020): install-time drop-and-execute of a package-
+  // BUNDLED native binary with no network fetch (jscrambler@8.14.0). Quasi-never legit;
+  // bypasses MT-1 cap + reputation attenuation like the other install-time RCE markers.
+  'install_native_drop_exec'
+]);
+
+// Lifecycle compound types that indicate real malicious intent beyond a simple postinstall
+const LIFECYCLE_INTENT_TYPES = new Set([
+  'lifecycle_dataflow',           // lifecycle + suspicious dataflow
+  'lifecycle_dangerous_exec',     // lifecycle + dangerous shell
+  'lifecycle_inline_exec',        // lifecycle + node -e
+  'lifecycle_remote_require',     // lifecycle + remote code load
+  'lifecycle_hidden_payload',     // lifecycle targeting node_modules/
+  'obfuscated_lifecycle_env',     // lifecycle + obfuscation + env access
+  'bun_runtime_evasion',          // Bun runtime in lifecycle (sandbox evasion)
+  'lifecycle_shell_pipe',         // curl|sh in preinstall (also HC, but belt+suspenders)
+]);
+
+// --- Suspect tier constants ---
+
+// Tier 1: high-intent threat types that always warrant sandbox analysis
+const TIER1_TYPES = new Set([
+  'sandbox_evasion', 'env_charcode_reconstruction',
+  'staged_payload', 'staged_binary_payload',
+  'mcp_config_injection', 'ai_agent_abuse', 'crypto_miner'
+]);
+
+// Tier 2: active threat types that warrant sandbox when queue pressure is low
+const TIER2_ACTIVE_TYPES = new Set([
+  'suspicious_dataflow', 'dangerous_call_eval', 'dangerous_call_function'
+]);
+
+// Tier 3: passive/informational types -- no sandbox, no stats.suspect increment
+const TIER3_PASSIVE_TYPES = new Set([
+  'sensitive_string', 'suspicious_domain', 'obfuscation_detected',
+  'prototype_hook', 'env_access', 'dynamic_import',
+  'dynamic_require', 'high_entropy_string'
+]);
+
+// --- Verbose mode (--verbose sends ALL alerts including temporal/publish/maintainer) ---
+// @deprecated verboseMode is unused in production -- temporal/publish/maintainer
+// alerts are controlled by their own feature flags (isTemporalEnabled, etc.).
+// Retained for backward compatibility with existing tests and CLI flag parsing.
+
+let verboseMode = false;
+
+// --- Helper functions ---
+
+function hasHighOrCritical(result) {
+  return result.summary.critical > 0 || result.summary.high > 0;
+}
+
+function hasHighConfidenceThreat(result) {
+  if (!result || !result.threats) return false;
+  return result.threats.some(t => HIGH_CONFIDENCE_MALICE_TYPES.has(t.type) && t.severity !== 'LOW');
+}
+
+function hasIOCMatch(result) {
+  if (!result || !result.threats) return false;
+  return result.threats.some(t => IOC_MATCH_TYPES.has(t.type));
+}
+
+// Stealth-exec + obfuscation compound: a detached/silent background process
+// (silent_stealth_process AST-092 / detached_process AST-012) shipped ALONGSIDE
+// obfuscator.io-mangled code (js_obfuscation_pattern ENTROPY-003, the `_0x*` hex
+// signature). The AND is quasi-never legitimate: legit process managers (pm2,
+// Platformatic Watt, the mongodb driver) detach but do NOT obfuscate, and legit
+// obfuscated bundles do NOT silently detach a process. It is the ATO / CI-supply-
+// chain fingerprint (@asyncapi/specs Miasma 2026-07-14; @umudik/lotaru) whose raw
+// score reputation attenuation crushes to LOW on an established package.
+// Measured on the 128,429-scan production ledger (scripts/mine-fpr): exactly two
+// packages match — BOTH confirmed malicious — so wiring this as a reputation-
+// independent webhook bypass adds ZERO benign false positives (ΔFPR = 0).
+function hasStealthObfuscationCompound(result) {
+  if (!result || !result.threats) return false;
+  const types = new Set(result.threats.map(t => t.type));
+  const stealthExec = types.has('silent_stealth_process') || types.has('detached_process');
+  return stealthExec && types.has('js_obfuscation_pattern');
+}
+
+function hasTyposquat(result) {
+  if (!result || !result.threats) return false;
+  return result.threats.some(t => t.type === 'typosquat_detected' || t.type === 'pypi_typosquat_detected');
+}
+
+function hasLifecycleWithIntent(result) {
+  if (!result || !result.threats) return false;
+  const hasLifecycle = result.threats.some(t => t.type === 'lifecycle_script');
+  if (!hasLifecycle) return false;
+  // lifecycle_script + any lifecycle compound or HC type -> T1a justified
+  return result.threats.some(t => LIFECYCLE_INTENT_TYPES.has(t.type));
+}
+
+/**
+ * Classify a scan result into suspect tiers.
+ * @param {Object} result - scan result with threats and summary
+ * @returns {{ suspect: boolean, tier: '1a'|'1b'|2|3|null }}
+ *   - tier '1a': mandatory sandbox (HC malice types, TIER1_TYPES non-LOW, lifecycle + intent compound)
+ *   - tier '1b': conditional sandbox (HIGH/CRITICAL severity without HC type -- bundler FP zone)
+ *   - tier 2: sandbox si queue < 50 (2+ distinct types with active signal)
+ *   - tier 3: logged only, no sandbox, no stats.suspect (passive-only signals)
+ *   - { suspect: false, tier: null } for CLEAN packages
+ */
+function isSuspectClassification(result) {
+  if (!result || !result.threats || result.threats.length === 0) {
+    return { suspect: false, tier: null };
+  }
+
+  // Tier 1a: high-confidence malice types, TIER1_TYPES (non-LOW), or lifecycle + intent compound
+  // These are quasi-never legitimate in benign packages -> mandatory sandbox
+  if (hasHighConfidenceThreat(result)) {
+    return { suspect: true, tier: '1a' };
+  }
+  if (result.threats.some(t => TIER1_TYPES.has(t.type) && t.severity !== 'LOW')) {
+    return { suspect: true, tier: '1a' };
+  }
+  if (hasLifecycleWithIntent(result)) {
+    return { suspect: true, tier: '1a' };
+  }
+  // IOC / known-malicious matches (known_malicious_package/hash, pypi_malicious_package,
+  // shai_hulud_marker/backdoor) are definite malware → mandatory sandbox, unconditionally.
+  // Promotes them out of the (now corroboration-gated) tier-1b zone so the tightening
+  // below can never drop a confirmed IOC hit, regardless of score.
+  if (hasIOCMatch(result)) {
+    return { suspect: true, tier: '1a' };
+  }
+
+  // Tier 1b: HIGH/CRITICAL severity without HC type or TIER1_TYPES — the heuristic
+  // FP zone (a lone non-HC HIGH heuristic like compromised_email_domain /
+  // prototype_pollution / trusted_new_dependency flips a package to suspect even at
+  // score ~3). FPR audit 2026-06 (200-pkg blind adjudication, ~99% FP): a SINGLE
+  // non-HC HIGH finding made ~half of all "suspect" packages, almost all FP. It is
+  // no longer sufficient on its own — require corroboration: a real alert score
+  // (>=20), a compound, or >=2 DISTINCT HIGH/CRITICAL types. HC types / TIER1_TYPES /
+  // lifecycle+intent already returned tier 1a above, and Track R floors confirmed
+  // malice at 20, so detection is preserved; lone-heuristic packages fall through to
+  // the 2+-distinct-type tier 2/3 logic (and to CLEAN when they carry one finding).
+  const _hcSevere = result.threats.filter(t => t.severity === 'HIGH' || t.severity === 'CRITICAL');
+  const _highCritTypes = new Set(_hcSevere.map(t => t.type));
+  const _hasCompound = result.threats.some(t => t.compound === true);
+  const _score = (result.summary && typeof result.summary.riskScore === 'number') ? result.summary.riskScore : 0;
+  if (_hcSevere.length > 0 && (_score >= 20 || _hasCompound || _highCritTypes.size >= 2)) {
+    return { suspect: true, tier: '1b' };
+  }
+
+  const distinctTypes = new Set(result.threats.map(t => t.type));
+  if (distinctTypes.size < 2) {
+    return { suspect: false, tier: null };
+  }
+
+  // Tier 2: 2+ distinct types with at least one active type
+  if (result.threats.some(t => TIER2_ACTIVE_TYPES.has(t.type))) {
+    return { suspect: true, tier: 2 };
+  }
+
+  // Tier 3: 2+ distinct types but all passive
+  const allPassive = result.threats.every(t => TIER3_PASSIVE_TYPES.has(t.type));
+  if (allPassive) {
+    return { suspect: true, tier: 3 };
+  }
+
+  // Fallback: 2+ distinct types with non-passive types not in tier 2 active list.
+  // Previously this returned tier 2 unconditionally, but that was permissive —
+  // packages with 2 LOW findings in uncategorized types (e.g., @eeacms/* with
+  // score 2 observed 2026-04-11) landed in tier 2 and flooded the deferred
+  // sandbox queue, starving legitimate T1b/T2 candidates of the dedicated
+  // deferred slot.
+  //
+  // Threat model for this downgrade: an adversary reading the open-source
+  // rules can intentionally tune their malware to fire only LOW-severity
+  // patterns + 2 distinct non-T3 types to land in this fallback. If we
+  // downgrade ALL such cases to tier 3, a weak TIER1_TYPES match (e.g.,
+  // staged_payload at LOW, sandbox_evasion at LOW) would bypass sandbox
+  // verification entirely — TIER1_TYPES are "quasi-never legitimate" and
+  // weak matches still warrant dynamic inspection.
+  //
+  // Therefore: preserve tier 2 when EITHER (a) any finding is non-LOW
+  // severity OR (b) any finding is in TIER1_TYPES even at LOW severity.
+  // Downgrade to tier 3 only for packages with 2+ distinct LOW findings
+  // where NONE are in the quasi-never-legit TIER1 zone.
+  const hasNonLowFinding = result.threats.some(t => t.severity !== 'LOW');
+  const hasTier1Signal = result.threats.some(t => TIER1_TYPES.has(t.type));
+  if (hasNonLowFinding || hasTier1Signal) {
+    return { suspect: true, tier: 2 };
+  }
+  return { suspect: true, tier: 3 };
+}
+
+/**
+ * Classify an error into a category for the daily report breakdown.
+ * @param {Error} err
+ * @returns {'too_large'|'tar_failed'|'archive_failed'|'unsupported_format'|'http_error'|'static_timeout'|'timeout'|'other'}
+ */
+function classifyError(err) {
+  const msg = (err && err.message) || '';
+  if (/too large|tarball too large|exceeds \d+/i.test(msg)) return 'too_large';
+  // Wheel/zip extraction failures must NOT be lumped with tar failures —
+  // they were the dominant noise before adm-zip dispatch.
+  if (/unsupported archive format/i.test(msg)) return 'unsupported_format';
+  if (/zip[\s_-]|wheel|whl\b/i.test(msg)) return 'archive_failed';
+  if (/tar\b|extract/i.test(msg)) return 'tar_failed';
+  if (/HTTP [45]\d\d|HTTP \d{3}/i.test(msg)) return 'http_error';
+  if (/static scan timeout/i.test(msg)) return 'static_timeout';
+  if (/timeout/i.test(msg)) return 'timeout';
+  return 'other';
+}
+
+/**
+ * Increment error counter with category tracking.
+ * @param {Error} [err] - optional error for classification
+ * @param {Object} stats - stats object with errors and errorsByType counters
+ */
+function recordError(err, stats) {
+  stats.errors++;
+  const category = err ? classifyError(err) : 'other';
+  stats.errorsByType[category]++;
+}
+
+/**
+ * Format error count with breakdown by type for the daily report.
+ * Returns "0" if no errors, or "138 (HTTP: 60, tar: 40, timeout: 20, other: 18)" style.
+ */
+function formatErrorBreakdown(total, byType) {
+  if (total === 0) return '0';
+  const parts = [];
+  if (byType.http_error > 0) parts.push(`HTTP: ${byType.http_error}`);
+  if (byType.tar_failed > 0) parts.push(`tar: ${byType.tar_failed}`);
+  if (byType.archive_failed > 0) parts.push(`zip: ${byType.archive_failed}`);
+  if (byType.unsupported_format > 0) parts.push(`unsupported: ${byType.unsupported_format}`);
+  if (byType.too_large > 0) parts.push(`too large: ${byType.too_large}`);
+  if (byType.timeout > 0) parts.push(`timeout: ${byType.timeout}`);
+  if (byType.static_timeout > 0) parts.push(`static: ${byType.static_timeout}`);
+  if (byType.other > 0) parts.push(`other: ${byType.other}`);
+  if (parts.length === 0) return `${total}`;
+  return `${total} (${parts.join(', ')})`;
+}
+
+function formatFindings(result) {
+  if (!result || !result.threats || result.threats.length === 0) return '';
+  const seen = new Set();
+  const parts = [];
+  for (const t of result.threats) {
+    const key = `${t.type}(${t.severity})`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      parts.push(key);
+    }
+  }
+  return parts.join(', ');
+}
+
+function isSandboxEnabled() {
+  const env = process.env.MUADDIB_MONITOR_SANDBOX;
+  if (env !== undefined && env.toLowerCase() === 'false') return false;
+  return true;
+}
+
+function isCanaryEnabled() {
+  const env = process.env.MUADDIB_MONITOR_CANARY;
+  if (env !== undefined && env.toLowerCase() === 'false') return false;
+  return true;
+}
+
+function isLlmDetectiveEnabled() {
+  if (!process.env.ANTHROPIC_API_KEY) return false;
+  const env = process.env.MUADDIB_LLM_ENABLED;
+  if (env !== undefined && env.toLowerCase() === 'false') return false;
+  return true;
+}
+
+function getLlmDetectiveMode() {
+  const env = process.env.MUADDIB_LLM_MODE;
+  if (env && env.toLowerCase() === 'active') return 'active';
+  return 'shadow';
+}
+
+/** @deprecated See comment above verboseMode. */
+function isVerboseMode() {
+  if (verboseMode) return true;
+  const env = process.env.MUADDIB_MONITOR_VERBOSE;
+  return env !== undefined && env.toLowerCase() === 'true';
+}
+
+/** @deprecated See comment above verboseMode. */
+function setVerboseMode(value) {
+  verboseMode = !!value;
+}
+
+/**
+ * Quick typosquat check using only package name (no API calls).
+ * Used as cache trigger -- not for detection (full scanner handles that).
+ * @param {string} name - Package name
+ * @returns {boolean} True if name is suspiciously close to a popular package
+ */
+function quickTyposquatCheck(name) {
+  const lower = name.toLowerCase();
+  if (lower.startsWith('@')) return false;
+  if (lower.length < 4) return false;
+  if (POPULAR_NPM_NAMES.includes(lower)) return false;
+
+  for (const popular of POPULAR_NPM_NAMES) {
+    if (Math.abs(lower.length - popular.length) > 2) continue;
+    const dist = levenshteinDistance(lower, popular);
+    if (dist <= 2 && popular.length >= 5) return true;
+    if (dist === 1) return true;
+  }
+  return false;
+}
+
+/**
+ * Layer 3: Determine if a package should be cached and at what retention level.
+ * @param {string} name - Package name
+ * @param {Object|null} docMeta - Metadata from extractTarballFromDoc
+ * @param {Object|null} doc - Full CouchDB doc (npm; carries `versions` for first-publish)
+ * @param {Object} [opts] - Non-npm ecosystem hints:
+ *   { ecosystem?: 'npm'|'pypi', versionCount?: number }. PyPI has no packument at
+ *   ingest time, so the version count comes from preResolvePyPIBatch via opts.
+ * @returns {{ shouldCache: boolean, reason: string, retentionDays: number }}
+ */
+function evaluateCacheTrigger(name, docMeta, doc, opts = {}) {
+  const ecosystem = opts.ecosystem || 'npm';
+
+  // Trigger 1: IOC match -- 30-day retention. PyPI IOCs are namespaced "pypi:<name>".
+  try {
+    const iocs = loadCachedIOCs();
+    const inSet = (s) => s && (s.has(name) || (ecosystem === 'pypi' && s.has(`pypi:${name}`)));
+    if (inSet(iocs.wildcardPackages) || inSet(iocs.packagesMap)) {
+      return { shouldCache: true, reason: 'ioc_match', retentionDays: TARBALL_CACHE_HIGH_RISK_RETENTION_DAYS };
+    }
+  } catch { /* non-fatal */ }
+
+  // Trigger 2: Typosquat signal -- 7-day retention (ecosystem-specific popular list)
+  try {
+    const typo = ecosystem === 'pypi' ? !!findPyPITyposquatMatch(name) : quickTyposquatCheck(name);
+    if (typo) {
+      return { shouldCache: true, reason: 'typosquat_signal', retentionDays: TARBALL_CACHE_DEFAULT_RETENTION_DAYS };
+    }
+  } catch { /* non-fatal */ }
+
+  // Trigger 3: First publish (single version) -- 7-day retention.
+  // npm: count from the CouchDB doc; pypi: count passed via opts.versionCount.
+  const versionCount = ecosystem === 'pypi'
+    ? (Number.isFinite(opts.versionCount) ? opts.versionCount : null)
+    : (doc && doc.versions ? Object.keys(doc.versions).length : null);
+  if (versionCount === 1) {
+    return { shouldCache: true, reason: 'first_publish', retentionDays: TARBALL_CACHE_DEFAULT_RETENTION_DAYS };
+  }
+
+  // Trigger 4: account-takeover / burst -- 30-day retention (high-risk fast-takedown class).
+  // These are batch/registry-derived (published version vs dist-tags.latest; per-name recent
+  // version count), NOT knowable from name+docMeta at ingestion, so the caller
+  // (preResolveNpmBatch) computes them from _npmInfo and passes opts.{atoSignal,isBurst}.
+  // Closes the Leo Platform gap (June 2026): 20 existing packages re-published at non-latest
+  // versions matched neither typosquat nor first_publish -> never prefetched -> the malicious
+  // tarballs were 404'd before scan. ATO catches that class; burst catches Miasma-style floods.
+  if (opts.atoSignal || opts.isBurst) {
+    return { shouldCache: true, reason: opts.atoSignal ? 'ato' : 'burst', retentionDays: TARBALL_CACHE_HIGH_RISK_RETENTION_DAYS };
+  }
+
+  return { shouldCache: false, reason: '', retentionDays: 0 };
+}
+
+/**
+ * Determine if a first-publish package is high-risk and should be sandboxed
+ * even with a clean static scan (0 findings).
+ *
+ * First-publish is where malware concentrates: new packages from unknown
+ * maintainers with no linked repository are the highest-risk population.
+ *
+ * @param {Object|null} cacheTrigger - From evaluateCacheTrigger()
+ * @param {Object|null} npmRegistryMeta - From getPackageMetadata()
+ * @returns {boolean} true if package should be sandboxed regardless of static score
+ */
+function isFirstPublishHighRisk(cacheTrigger, npmRegistryMeta) {
+  if (!cacheTrigger || cacheTrigger.reason !== 'first_publish') return false;
+
+  // With registry metadata, require at least one additional risk signal
+  if (npmRegistryMeta) {
+    // No linked repository — high risk
+    if (!npmRegistryMeta.has_repository) return true;
+    // New maintainer (only 1 package ever published)
+    if (npmRegistryMeta.author_package_count <= 1) return true;
+    // Package age < 1 day with registry metadata but no strong signals — skip sandbox
+    // (has repo + experienced maintainer = likely legitimate)
+    return false;
+  }
+
+  // Without registry metadata, sandbox by default (precautionary)
+  return true;
+}
+
+module.exports = {
+  // Constants
+  IOC_MATCH_TYPES,
+  HIGH_CONFIDENCE_MALICE_TYPES,
+  LIFECYCLE_INTENT_TYPES,
+  TIER1_TYPES,
+  TIER2_ACTIVE_TYPES,
+  TIER3_PASSIVE_TYPES,
+  POPULAR_NPM_NAMES,
+  POPULAR_THRESHOLD,
+  DOWNLOADS_CACHE_TTL,
+  TARBALL_CACHE_DEFAULT_RETENTION_DAYS,
+  TARBALL_CACHE_HIGH_RISK_RETENTION_DAYS,
+
+  // Mutable state
+  downloadsCache,
+
+  // Functions
+  hasHighOrCritical,
+  hasHighConfidenceThreat,
+  hasIOCMatch,
+  hasStealthObfuscationCompound,
+  hasTyposquat,
+  hasLifecycleWithIntent,
+  isSuspectClassification,
+  classifyError,
+  recordError,
+  formatErrorBreakdown,
+  formatFindings,
+  isSandboxEnabled,
+  isCanaryEnabled,
+  isLlmDetectiveEnabled,
+  getLlmDetectiveMode,
+  isVerboseMode,
+  setVerboseMode,
+  quickTyposquatCheck,
+  evaluateCacheTrigger,
+  isFirstPublishHighRisk,
+};

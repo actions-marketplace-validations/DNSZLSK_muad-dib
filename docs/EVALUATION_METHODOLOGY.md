@@ -1,0 +1,833 @@
+# MUAD'DIB — Evaluation Methodology
+
+## 1. Methodology
+
+MUAD'DIB measures scanner effectiveness using a rigorous experimental protocol inspired by machine learning evaluation practices. Two distinct datasets are used:
+
+### Training Set (Adversarial)
+
+The **adversarial dataset** (`datasets/adversarial/`) contains malicious samples used during rule development. When a sample fails detection, rules are improved until it passes. This measures the scanner's **tuned performance** — the best-case scenario after iterative refinement.
+
+- Samples are created before any rule changes
+- Initial scores are recorded with rules frozen (pre-tuning baseline)
+- Rules are then improved to close detection gaps
+- Final scores represent post-tuning performance
+
+### Holdout Set
+
+The **holdout set** is a separate batch of samples created after rule tuning is complete. Rules are **frozen** — no modifications allowed. The raw scores measure the scanner's **generalization ability**: how well existing rules detect attack patterns they were never tuned for.
+
+- Samples designed independently from current rules
+- Scores reported as-is, no threshold adjustments
+- Provides an honest assessment of detection gaps
+
+Both metrics (ADR and Holdout) are published together. The gap between them reveals how much the scanner relies on sample-specific tuning vs. genuine pattern recognition.
+
+### Holdout Sealing Procedure
+
+To prevent post-hoc tuning bias, each holdout batch follows this protocol:
+
+1. **Creation**: samples are designed by the developer (or a third party) using attack techniques not yet covered by existing rules. Samples are committed to a dedicated `datasets/holdout-vN/` directory.
+2. **Git commit before evaluation**: the holdout directory is committed to git **before** `muaddib evaluate` is run. The commit hash serves as a timestamp proof that samples existed before scores were known.
+3. **Rules frozen**: no rule additions, scoring changes, or FP reduction tuning are permitted between the holdout commit and the first evaluation run.
+4. **Raw scores published as-is**: the first-contact scores are recorded in this document (Section 2 below). No retroactive threshold adjustments.
+5. **Post-evaluation rule work**: after raw scores are documented, rules may be improved to address detected gaps. Improved scores are tracked separately as ADR (adversarial detection rate), not as holdout scores.
+
+**Known limitations**:
+- Solo developer project: the same person creates samples and rules. Independent third-party holdout creation would strengthen the methodology but is not currently feasible.
+- The benign FPR holdout split (70/30 by package name hash) is deterministic and inspectable. It prevents accidental overfitting but not deliberate manipulation.
+- Git commit timestamps can be rewritten. For stronger guarantees, an external notarization service (e.g., OpenTimestamps) could anchor commit hashes to a blockchain.
+
+---
+
+## 2. Raw Scores Before Correction (Holdout History)
+
+Each batch below was evaluated with **rules frozen** at the time of creation. These scores represent pre-tuning baselines — the scanner's genuine first-contact performance on unseen samples.
+
+### Robustness Test (3 samples, rules frozen): 1/3 (33%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| dynamic-require | 28 | 40 | FAIL |
+| iife-exfil | 58 | 40 | PASS |
+| conditional-chain | 3 | 30 | FAIL |
+
+### Vague 2 (5 samples, rules frozen): 0/5 (0%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| template-literal-obfuscation | 3 | 30 | FAIL |
+| proxy-env-intercept | 28 | 40 | FAIL |
+| nested-payload | 13 | 30 | FAIL |
+| dynamic-import | 13 | 30 | FAIL |
+| websocket-exfil | 13 | 30 | FAIL |
+
+### Intermediate Batch (5 samples, rules frozen): 3/5 (60%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| bun-runtime-evasion | 48 | 30 | PASS |
+| preinstall-exec | 13 | 35 | FAIL |
+| remote-dynamic-dependency | 35 | 35 | PASS |
+| github-exfil | 68 | 30 | PASS |
+| detached-background | 13 | 35 | FAIL |
+
+### Vague 3 (5 samples, rules frozen): 3/5 (60%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| ai-agent-weaponization | 13 | 35 | FAIL |
+| ai-config-injection | 0 | 30 | FAIL |
+| rdd-zero-deps | PASS | 35 | PASS |
+| discord-webhook-exfil | PASS | 30 | PASS |
+| preinstall-background-fork | PASS | 35 | PASS |
+
+### Holdout v1 (10 samples, rules frozen): 3/10 (30%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| silent-error-swallow | 35 | 25 | PASS |
+| double-base64-exfil | 13 | 30 | FAIL |
+| crypto-wallet-harvest | 0 | 25 | FAIL |
+| self-hosted-runner-backdoor | 3 | 20 | FAIL |
+| dead-mans-switch | 68 | 30 | PASS |
+| fake-captcha-fingerprint | 3 | 20 | FAIL |
+| pyinstaller-dropper | 3 | 35 | FAIL |
+| gh-cli-token-steal | 0 | 30 | FAIL |
+| triple-base64-github-push | 38 | 30 | PASS |
+| browser-api-hook | 0 | 20 | FAIL |
+
+### Holdout v2 (10 samples, rules frozen): 4/10 (40%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| env-var-reconstruction | 3 | 25 | FAIL |
+| homedir-ssh-key-steal | 35 | 30 | PASS |
+| setTimeout-chain | 35 | 25 | PASS |
+| wasm-loader | 25 | 20 | PASS |
+| npm-lifecycle-preinstall-curl | 13 | 30 | FAIL |
+| process-env-proxy-getter | 0 | 20 | FAIL |
+| readable-stream-hijack | 0 | 20 | FAIL |
+| github-workflow-inject | 0 | 25 | FAIL |
+| npm-cache-poison | 0 | 20 | FAIL |
+| conditional-os-payload | 35 | 25 | PASS |
+
+### Holdout v3 (10 samples, rules frozen): 6/10 (60%)
+
+| Sample | Score | Threshold | Result |
+|--------|-------|-----------|--------|
+| require-cache-poison | 0 | 20 | FAIL |
+| symlink-escape | 35 | 25 | PASS |
+| dns-txt-payload | 10 | 25 | FAIL |
+| env-file-parse-exfil | 25 | 25 | PASS |
+| git-credential-steal | 25 | 25 | PASS |
+| electron-rce | 45 | 25 | PASS |
+| postinstall-reverse-shell | 3 | 30 | FAIL |
+| steganography-payload | 10 | 15 | FAIL |
+| npm-hook-hijack | 38 | 20 | PASS |
+| timezone-trigger | 45 | 20 | PASS |
+
+### Holdout v4 (10 samples, rules frozen, deobfuscation test): 8/10 (80%)
+
+This holdout specifically tests whether the new deobfuscation pre-processing (`src/scanner/deobfuscate.js`) improves detection of obfuscated malware. Samples use string concatenation, charcode reconstruction, base64 encoding, and hex arrays to hide malicious intent.
+
+| Sample | Score | Threshold | Result | Deobfuscation Impact |
+|--------|-------|-----------|--------|----------------------|
+| base64-require | 25 | 20 | PASS | Resolves `Buffer.from('Y2hpbGRfcHJvY2Vzcw==','base64')` |
+| charcode-fetch | 35 | 20 | PASS | Resolves `String.fromCharCode` URL |
+| concat-env-steal | 13 | 20 | FAIL | Concat resolved but insufficient score |
+| hex-array-exec | 25 | 20 | PASS | **0 → 25** (only detected with deobfuscation) |
+| atob-eval | 11 | 20 | FAIL | `eval(atob(...))` not yet a distinct rule |
+| nested-base64-concat | 10 | 20 | FAIL | Const propagation not yet implemented |
+| charcode-spread-homedir | 45 | 20 | PASS | Resolves `String.fromCharCode(...[111,115])` |
+| mixed-obfuscation-stealer | 45 | 25 | PASS | **10 → 45** (multi-layer resolved) |
+| template-literal-hide | 60 | 15 | PASS | Template literals already detected |
+| double-decode-exfil | 70 | 20 | PASS | Double base64 layers resolved |
+
+**Note:** The raw pre-tuning score is **8/10 (80%)**. Two samples (atob-eval and nested-base64-concat) were later fixed with `staged_eval_decode` (MUADDIB-AST-021) and const propagation in the deobfuscator, bringing the post-correction score to 10/10. The 80% is the honest generalization metric.
+
+**Key deobfuscation impact:** `hex-array-exec` went from score 0 (undetectable) to 25 purely thanks to deobfuscation resolving `[0x63,...].map(c=>String.fromCharCode(c)).join('')`. `mixed-obfuscation-stealer` went from 10 to 45 as multiple obfuscation layers were resolved, revealing hidden dangerous patterns.
+
+### Holdout v5 (10 samples, rules frozen, inter-module dataflow test): 5/10 (50%)
+
+This holdout is the first to specifically test **cross-file dataflow detection** (`src/scanner/module-graph/`, directory of 9 files since v2.x refactor). Samples split credential theft across multiple files: one module reads sensitive data, another exfiltrates it over the network. Patterns include re-export chains, class method analysis, named export destructuring, function-wrapped taint propagation, and 3-hop chains with intermediate transforms.
+
+| Sample | Score | Threshold | Result | Technique |
+|--------|-------|-----------|--------|-----------|
+| split-env-exfil | PASS | 20 | PASS | Cross-file `process.env.GITHUB_TOKEN` → `fetch()` |
+| split-npmrc-steal | PASS | 20 | PASS | Cross-file `fs.readFileSync(.npmrc)` → `https.request` |
+| reexport-chain | PASS | 20 | PASS | Double re-export chain (a → b → c) |
+| three-hop-chain | PASS | 20 | PASS | Source → transform (base64) → sink, 3-hop propagation |
+| named-export-steal | PASS | 20 | PASS | Named export destructuring `{ getCredentials }` → `fetch()` |
+| class-method-exfil | FAIL | 20 | FAIL | Class instantiation + method call dataflow |
+| mixed-inline-split | PASS | 20 | PASS | Dual: inline eval + cross-file credential flow |
+| conditional-split | PASS | 20 | PASS | CI-gated exfiltration (only in `process.env.CI`) |
+| event-emitter-flow | FAIL | 20 | FAIL | EventEmitter pub/sub dataflow across modules |
+| callback-exfil | FAIL | 20 | FAIL | Callback parameter passing for credential exfiltration |
+
+**Note:** The raw pre-tuning score is **5/10 (50%)**. The 50% drop from holdout v4 (80%) is expected — this is the first holdout testing an entirely new scanner (`module-graph/`, now a directory of 9 files) rather than improvements to existing scanners. 3 samples use patterns outside the current scope: EventEmitter pub/sub flow, callback-based taint propagation, and class instantiation method calls. These are accepted as known limitations of the static AST approach. Post-correction score: 8/10, with 2 limitations accepted (EventEmitter, callback).
+
+**Key inter-module capabilities validated:** re-export chains (a → b → c), 3-hop propagation with intermediate transforms, named export + destructuring, inline require re-export, function-wrapped taint propagation, and class method analysis (post-correction).
+
+### Vague 4 (5 samples, rules frozen): 0/5 (0%)
+
+Vague 4 tests **5 advanced evasion techniques** documented in 2025-2026 threat intelligence: string concatenation to evade path matching, native addon camouflage, steganographic payload chains, IDE persistence via VS Code tasks.json, and MCP config injection. All 5 samples were designed to bypass existing rules through dynamic path construction, content-level obfuscation, and compound patterns split across multiple steps.
+
+| Sample | Pre-fix Score | Threshold | Result | Technique | Source |
+|--------|---------------|-----------|--------|-----------|--------|
+| git-hook-persistence | 3 | 10 | FAIL | String concat evasion (`.gi` + `t` → `.git`), writeFileSync to .git/hooks/ | SANDWORM_MODE / Socket.dev |
+| native-addon-camouflage | 3 | 25 | FAIL | Binary download + chmod 0o755 + execSync, disguised as native addon compilation | NeoShadow / Aikido |
+| stego-png-payload | 16 | 35 | FAIL | Fetch PNG + pixel extraction + createDecipheriv + gunzipSync + `new Function()` | buildrunner-dev / Veracode |
+| stegabin-vscode-persistence | 28 | 30 | FAIL | Pastebin steganography for C2, write tasks.json with runOn:folderOpen auto-exec | StegaBin / FAMOUS CHOLLIMA |
+| mcp-server-injection | 3 | 25 | FAIL | MCP server creation + injection into .claude/settings.json, .cursor/mcp.json | SANDWORM_MODE |
+
+**Pre-fix score: 0/5 (0%).** All 5 samples evaded detection with rules frozen. Key evasion techniques:
+
+- **String concatenation** (`.gi` + `t` + `ho` + `oks`) defeated static path matching for `.git/hooks/`
+- **Native addon camouflage**: `execSync` with legitimate-looking commands (node-gyp rebuild) didn't match `DANGEROUS_CMD_PATTERNS`, so no exec threat fired
+- **Steganographic chain**: `new Function()` in `handleNewExpression` did NOT set `ctx.hasDynamicExec`, so the compound `fetch + decrypt + exec` never triggered
+- **IDE persistence**: `tasks.json` path was built via function return value (not a tracked variable), so path resolution failed
+- **MCP injection**: fully dynamic paths (computed from `os.homedir()`) defeated AST-level path matching
+
+**Post-fix score: 5/5 (100%).** After 5 corrections:
+
+| Sample | Pre-fix | Post-fix | Key Fix |
+|--------|---------|----------|---------|
+| git-hook-persistence | 3 | 13 | `resolveStringConcat()` resolves `BinaryExpression` with `+` operator |
+| native-addon-camouflage | 3 | 28 | New compound `download_exec_binary` (AST-034): content-level fetch + chmod + execSync |
+| stego-png-payload | 16 | 41 | Fixed `new Function()` setting `ctx.hasDynamicExec` + new compound `fetch_decrypt_exec` (AST-033) |
+| stegabin-vscode-persistence | 28 | 38 | New compound `ide_persistence` (AST-035): content co-occurrence tasks.json + runOn + writeFileSync |
+| mcp-server-injection | 3 | 28 | Content-level `hasMcpContentKeywords` detection (mcpServers + writeFileSync co-occurrence) |
+
+**3 new rules added:** `fetch_decrypt_exec` (MUADDIB-AST-033, CRITICAL, T1027.003), `download_exec_binary` (MUADDIB-AST-034, CRITICAL, T1105), `ide_persistence` (MUADDIB-AST-035, HIGH, T1546).
+
+**Key technique: `resolveStringConcat()`** — Recursive function that resolves `BinaryExpression` nodes with `+` operator: `.gi` + `t` → `.git`. Also handles `TemplateLiteral` without expressions. Combined with `extractStringValue()` in `extractStringValueDeep()` wrapper for comprehensive string resolution across all path-matching detectors (AST-027, AST-028).
+
+---
+
+## 3. Progression
+
+| Batch | Pre-Tuning Rate | Samples |
+|-------|-----------------|---------|
+| Robustness Test | 33% (1/3) | 3 |
+| Vague 2 | 0% (0/5) | 5 |
+| Intermediate | 60% (3/5) | 5 |
+| Vague 3 | 60% (3/5) | 5 |
+| Holdout v1 | 30% (3/10) | 10 |
+| Holdout v2 | 40% (4/10) | 10 |
+| Holdout v3 | 60% (6/10) | 10 |
+| **Holdout v4** | **80% (8/10)** | 10 |
+| **Holdout v5** | **50% (5/10)** | 10 |
+| **Vague 4** | **0% (0/5)** | 5 |
+
+**Key observations:**
+
+- The 0% in Vague 2 exposed critical gaps (template literal handling, staged payloads, dynamic imports). Fixing these improved subsequent batches.
+- The 60% in Intermediate/Vague 3 shows partial generalization — rules improved for earlier samples also caught new patterns.
+- The **Holdout v1 30%** revealed 7 genuine blind spots: binary droppers, prototype hooking, credential CLI theft, workflow injection, crypto wallet harvesting, and more.
+- The **Holdout v2 40%** shows marginal improvement in generalization (+10pp). 6 new blind spots identified: env var charcode reconstruction, lifecycle shell pipe, Object.defineProperty proxy, Node.js core prototype hijack, GitHub workflow injection via template literals, npm cache poisoning.
+- The **Holdout v3 60%** shows significant improvement (+20pp over v2). 4 blind spots identified: require.cache poisoning, DNS TXT payload staging, JavaScript reverse shell (net.Socket + pipe), steganographic payload execution.
+- The **Holdout v4 80%** shows the strongest generalization yet (+20pp over v3). This batch specifically tested deobfuscation — 2 samples only detectable thanks to the new deobfuscation pre-processing (`hex-array-exec` 0→25, `mixed-obfuscation-stealer` 10→45). 2 blind spots identified: eval+decode compound pattern, const propagation needed for split base64 variables.
+- The **Holdout v5 50%** is the first holdout testing an entirely new scanner (`module-graph/`, now a directory of 9 files) rather than improvements to existing ones. The drop from 80% to 50% reflects the challenge of a new detection domain (inter-module dataflow). 5 samples detected out of the box — re-export chains, 3-hop propagation, named exports, inline require, conditional splits. 3 samples failed: EventEmitter flows, callback-based taint, and class method calls (2 accepted as fundamental limitations of static analysis, 1 fixed post-holdout).
+- The **Vague 4 0%** is the worst pre-fix result since Vague 2 (also 0%). All 5 samples used advanced evasion: string concatenation to break path matching, native addon camouflage, steganographic pipelines, IDE persistence, and MCP config injection. The 0% exposed critical gaps in dynamic path resolution and compound pattern detection. 5 corrections (including `resolveStringConcat()` and 3 new compound rules) brought all 5 to detection. Post-fix: 5/5.
+- **Progression trend: 30% → 40% → 60% → 80% → 50% → 0%** — the 0% in Vague 4 shows that sophisticated evasion techniques (string concatenation, content-level patterns) can still defeat the scanner. But each 0% batch drives significant improvements: Vague 2 led to template literal handling, Vague 4 led to `resolveStringConcat()` and 3 new compound detection rules.
+- After corrections, 82 of 83 samples pass (ADR 98.8%, with 1 documented miss: `require-cache-poison`). The pre-correction scores are the true measures of generalization.
+
+---
+
+## 4. Improvement Cycle
+
+MUAD'DIB follows a structured **tune-freeze-holdout-publish** cycle:
+
+```
+1. TUNE     Create adversarial samples with rules frozen
+            Record pre-tuning scores (raw holdout data)
+            Improve rules until all samples pass
+
+2. FREEZE   Lock rules — no further modifications
+
+3. HOLDOUT  Create new samples never seen during tuning
+            Run scanner with frozen rules
+            Record raw scores (no threshold changes)
+
+4. PUBLISH  Report both metrics:
+            - ADR (post-tuning): measures tuned performance
+            - Holdout (pre-tuning): measures generalization
+
+5. PROMOTE  Move FAIL samples to adversarial dataset
+            Improve rules to close gaps
+            Repeat from step 2 with new holdout batch
+```
+
+This cycle ensures:
+- **Honesty**: pre-tuning scores are always published alongside post-tuning scores
+- **No overfitting**: holdout samples test genuine generalization, not memorization
+- **Continuous improvement**: each cycle identifies real blind spots and closes them
+- **Reproducibility**: `muaddib evaluate` reproduces all metrics locally
+
+---
+
+## 5. Attack Technique Sources
+
+All adversarial samples are based on real-world attack techniques documented by security researchers in 2025-2026:
+
+| Source | Techniques | Reference |
+|--------|-----------|-----------|
+| **Snyk** | ToxicSkills (AI config injection in .cursorrules, CLAUDE.md), s1ngularity/Nx (AI agent weaponization with --dangerously-skip-permissions), Clinejection (prompt injection via copilot-instructions.md) | Snyk Blog 2025 |
+| **Sonatype** | PhantomRaven (zero-deps variant with inline https.get + eval in postinstall), binary droppers via /tmp/ | Sonatype Blog 2025 |
+| **Datadog Security Labs** | Shai-Hulud 2.0 (GitHub Actions workflow injection, self-hosted runner backdoor, discussion.yaml persistence) | Datadog Security Research 2025 |
+| **Unit 42 (Palo Alto)** | Shai-Hulud v1 campaign analysis, credential exfiltration patterns, dead man's switch (rm -rf if no tokens) | Unit 42 Threat Research 2025 |
+| **Check Point Research** | Shai-Hulud 2.0 credential harvesting, Discord webhook exfiltration, base64 multi-layer encoding | Check Point Research 2025 |
+| **Zscaler ThreatLabz** | Shai-Hulud V2 evasion techniques, CI-gated payloads, DNS chunked exfiltration | Zscaler ThreatLabz 2025 |
+| **StepSecurity** | s1ngularity campaign (Claude/Gemini/Q agent abuse, --yolo flag), postinstall fork + detached credential theft | StepSecurity Blog 2025 |
+| **Socket.dev** | Mid-Year Supply Chain Report 2025, preinstall-exec patterns, staged fetch payloads, npm lifecycle hooks abuse | Socket.dev 2025 |
+| **NVIDIA** | AI agent security guidance, prompt injection in AI config files, tool-use exploitation | NVIDIA AI Security 2025 |
+| **Sygnia** | chalk/debug September 2025 compromise, prototype hooking (globalThis.fetch, XMLHttpRequest.prototype), native API interception | Sygnia Threat Intelligence 2025 |
+| **Hive Pro** | Typosquatting credential theft, crypto wallet harvesting (.ethereum, .electrum, .config/solana), gh auth token CLI abuse | Hive Pro Research 2025 |
+| **Koi Security** | PackageGate vulnerability, npm registry metadata manipulation, publish frequency anomalies | Koi Security 2025 |
+| **Aikido** | NeoShadow campaign: native addon camouflage (fake node-gyp rebuild), binary download + chmod + execSync dropper pattern | Aikido Security Blog 2025 |
+| **Veracode** | buildrunner-dev steganographic payloads: PNG pixel extraction + crypto.createDecipheriv + zlib.gunzipSync + new Function() execution chain | Veracode Research 2025 |
+| **Reversing Labs** | FAMOUS CHOLLIMA / StegaBin: Pastebin character-interval steganography for C2, VS Code tasks.json persistence with runOn:folderOpen auto-execution | Reversing Labs 2025 |
+
+---
+
+## 6. FPR Methodology Correction (v2.2.7)
+
+### Previous FPR was invalid (v2.2.0–v2.2.6)
+
+The FPR metric reported in versions v2.2.0 through v2.2.6 (0% on 98 packages) was **invalid**. The `evaluateBenign()` function created empty temporary directories containing only a `package.json` with the package name, then ran the scanner against these empty directories. This only tested IOC name matching and typosquat detection — it did **not** scan the actual source code of the packages. The 13+ scanners (AST, dataflow, obfuscation, entropy, etc.) had nothing to analyze.
+
+This was discovered when comparing the evaluation approach for benign packages vs. ground truth/adversarial: the latter scanned real JavaScript files, while benign packages never downloaded or examined any code.
+
+### Fix: real source code scanning
+
+In v2.2.7, `evaluateBenign()` was rewritten to:
+1. Download real tarballs via `npm pack <pkg>` (executed with `cwd` to avoid Windows path issues)
+2. Extract tarballs using native Node.js (`zlib.gunzipSync` + tar header parsing — no shell `tar` dependency)
+3. Scan the extracted source code with all <!--stat:scanners-->22<!--/stat:scanners--> parallel scanners (+ 2 pre-analysis modules + 1 async parser bootstrap for python-ast)
+4. Cache tarballs in `.muaddib-cache/benign-tarballs/` to avoid re-downloading
+5. Support `--benign-limit N` to test a subset and `--refresh-benign` to force re-download
+
+### Real FPR: 38% (19/50) — first honest measurement (v2.2.7)
+
+Measured on 50 real npm packages (first 50 from the 529-package benign list). Threshold: score > 20.
+
+**Top FP-causing threat types** (frequency across all 19 false positives):
+
+| Threat Type | Count | Primary Offenders |
+|-------------|-------|-------------------|
+| `dynamic_require` | 127 | next (76), gatsby (20), strapi (7), sails (6) |
+| `dangerous_call_function` | 90 | keystone (29), next (20), htmx.org (10), vue (7) |
+| `prototype_hook` | 67 | restify (52), next (15) |
+| `env_access` | 61 | next (33), keystone (17), moleculer (3) |
+| `dynamic_import` | 56 | next (45), gatsby (7), nuxt (3) |
+| `obfuscation_detected` | 44 | next (41), keystone (1), total.js (1) |
+| `typosquat_detected` | 25 | chai↔chalk, pino↔sinon, ioredis↔redis, etc. |
+| `suspicious_dataflow` | 26 | next (13), keystone (4), moleculer (4) |
+| `dangerous_call_eval` | 21 | next (11), htmx.org (6), total.js (4) |
+| `require_cache_poison` | 18 | gatsby (8), next (4), moleculer (2) |
+| `staged_payload` | 10 | htmx.org (5), next (4), total.js (1) |
+
+**Worst offenders** (score 100):
+
+| Package | Score | Primary FP Causes |
+|---------|-------|-------------------|
+| next | 100 | Massive bundled output with dynamic requires/imports, obfuscated dist files, prototype extensions |
+| gatsby | 100 | Plugin system with dynamic requires, require.cache for HMR |
+| restify | 100 | `Request.prototype.*` / `Response.prototype.*` assignments (52 hits) |
+| moleculer | 100 | Datadog metrics (os.hostname + fetch), require.cache for hot-reload |
+| keystone | 100 | Bundled admin UI (minified JS), env access for config keys |
+| total.js | 100 | eval-based template engine, dynamic env access, staged payload pattern |
+| htmx.org | 100 | eval for dynamic CSS expressions + fetch in same file |
+
+---
+
+## 7. FP Reduction (v2.2.8)
+
+### Approach: count-based severity downgrade
+
+The key insight: **legitimate frameworks produce high volumes of certain threat types, while malware typically has 1-3 occurrences**. A package with 76 `dynamic_require` hits is almost certainly a plugin system (Next.js), not malware. A package with 52 `prototype_hook` hits is a framework extending its own classes (Restify), not a prototype poisoning attack.
+
+MUAD'DIB v2.2.8 introduces **post-processing FP reductions** applied after deduplication but before scoring/enrichment. These downgrade severity (not remove findings) based on per-package threat counts, preserving detection signals while reducing score impact.
+
+### 5 corrections
+
+**Correction 1 — `dynamic_require` (>10 occurrences → LOW):**
+- If a package has more than 10 `dynamic_require` findings, all HIGH occurrences are downgraded to LOW
+- Rationale: Next.js has 76, Gatsby 20, Strapi 7. Malware never has >10 dynamic requires.
+- Safety: adversarial `dynamic-require` sample has ~5-6 findings (well under threshold)
+
+**Correction 2 — `dangerous_call_function` (>5 occurrences → LOW):**
+- If a package has more than 5 `dangerous_call_function` findings, all MEDIUM occurrences are downgraded to LOW
+- Rationale: Keystone has 29, Next.js 20, htmx 10. Template engines legitimately use many `Function()` calls.
+- Safety: no adversarial sample has >5 Function() calls
+
+**Correction 3 — `prototype_hook` (custom framework prototypes → MEDIUM):**
+- `prototype_hook` findings targeting `Request.prototype.*`, `Response.prototype.*`, `App.prototype.*`, or `Router.prototype.*` are downgraded from HIGH to MEDIUM
+- CRITICAL prototype hooks (Node.js core: `http.IncomingMessage`, `net.Socket`) are NOT touched
+- Malicious hooks targeting `globalThis.fetch` or `XMLHttpRequest.prototype` remain HIGH
+- Rationale: Restify has 52 hits, all Request/Response.prototype. HTTP frameworks legitimately extend these classes.
+- Safety: adversarial `browser-api-hook` uses `globalThis.fetch` and `XMLHttpRequest.prototype` — neither matches the framework pattern
+
+**Correction 4 — Typosquat whitelist expansion:**
+- 10 packages added to the WHITELIST in `src/scanner/typosquat.js`: chai, pino, ioredis, bcryptjs, recast, asyncdi, redux, args, oxlint, vasync
+- These are legitimate, well-established packages whose names happen to be close to other popular packages (e.g., chai↔chalk, redux↔redis, recast↔react)
+- Safety: adversarial samples use synthetic package.json with no real dependencies
+
+**Correction 5 — `require_cache_poison` (>3 occurrences → LOW):**
+- If a package has more than 3 `require_cache_poison` findings, all CRITICAL occurrences are downgraded to LOW
+- Rationale: Gatsby has 8, Next.js 4. HMR/hot-reload tools legitimately access `require.cache`. Malware touches it 1-2 times max.
+- Safety: no adversarial sample has >3 require.cache accesses
+
+### Results: FPR 38% → 19.4%
+
+Measured on the full 529-package benign dataset (527 scanned, 2 skipped).
+
+**Score distribution** (527 packages):
+
+| Score Range | Count | Percentage |
+|-------------|-------|------------|
+| 0 (clean) | 237 | 45.0% |
+| 1–10 | 144 | 27.3% |
+| 11–20 | 44 | 8.3% |
+| 21–50 (FP) | 45 | 8.5% |
+| 51–100 (FP) | 57 | 10.8% |
+
+**Packages rescued by corrections** (from 50-package subset):
+- vue: 21 → 7 (7 `dangerous_call_function` downgraded)
+- preact: 23 → 3 (6 `dangerous_call_function` downgraded)
+- riot: 25 → 15 (prototype_hook + require_cache_poison downgraded)
+- derby: 26 → 16 (prototype_hook downgraded)
+
+**Top remaining FP-causing threat types** (full 529 dataset):
+
+| Threat Type | Total Hits | Packages Affected |
+|-------------|------------|-------------------|
+| `dynamic_require` | 309 | 51 |
+| `env_access` | 274 | 44 |
+| `prototype_hook` | 226 | 10 |
+| `suspicious_dataflow` | 151 | 39 |
+| `dangerous_call_function` | 151 | 33 |
+| `obfuscation_detected` | 100 | 28 |
+| `dynamic_import` | 91 | 21 |
+
+### Safety verification
+
+All corrections were verified against adversarial and holdout datasets:
+- **TPR**: 100% (4/4) — no regression
+- **ADR**: 100% (35/35) — all 35 adversarial samples still detected
+- **Holdouts**: 40/40 across v2, v3, v4, v5 — all pass
+
+---
+
+## 8. FP Reduction Pass 2 (v2.2.9)
+
+### Approach: scanner-level + post-processing refinements
+
+Building on v2.2.8's count-based severity downgrade, v2.2.9 applies 4 additional corrections targeting the remaining top FP-causing threat types.
+
+### 4 corrections
+
+**Correction 1 — `env_access` (safe env vars + prefix filtering):**
+- Expanded `SAFE_ENV_VARS` list: added `SHELL`, `USER`, `LOGNAME`, `EDITOR`, `TZ`, `NODE_DEBUG`, `NODE_PATH`, `NODE_OPTIONS`, `DISPLAY`, `COLORTERM`, `FORCE_COLOR`, `NO_COLOR`, `TERM_PROGRAM`
+- Added `SAFE_ENV_PREFIXES`: `npm_config_*`, `npm_lifecycle_*`, `npm_package_*`, `lc_*` — filtered by prefix (case-insensitive)
+- Applied at scanner level (`src/scanner/ast.js`), not post-processing
+- Rationale: Next.js reads 33 env vars (PORT, NODE_ENV, npm_config_*), all configuration-related. A real env-stealing malware reads GITHUB_TOKEN, NPM_TOKEN, AWS keys.
+- Safety: adversarial samples access `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_ACCESS_KEY_ID` — none are in the safe list
+
+**Correction 2 — `suspicious_dataflow` (>5 occurrences → LOW):**
+- If a package has more than 5 `suspicious_dataflow` findings, all occurrences are downgraded to LOW (regardless of original severity)
+- Added to `FP_COUNT_THRESHOLDS` in `applyFPReductions()`
+- Rationale: Next.js has 13, Keystone 4, Moleculer 4. Legitimate frameworks with observability (os.hostname + fetch for Datadog/NewRelic metrics) produce many dataflow hits. A malware package has 1-2 dataflow patterns.
+
+**Correction 3 — `obfuscation_detected` (dist/build/bundle → LOW + >3 → LOW):**
+- Scanner-level: files in `dist/`, `build/`, or named `*.bundle.js`, `*.min.js` are assigned LOW severity instead of HIGH/CRITICAL
+- Post-processing: if a package has more than 3 `obfuscation_detected` findings, all remaining are downgraded to LOW
+- Applied both at scanner level (`src/scanner/obfuscation.js`) and in `applyFPReductions()`
+- Rationale: Next.js has 41 obfuscation hits (all in dist/build), htmx has 10. Bundled/minified output is expected to look obfuscated. A malware package obfuscates 1-2 files.
+
+**Correction 4 — `prototype_hook` MEDIUM scoring cap (15 points max):**
+- After v2.2.8 downgraded framework prototypes from HIGH to MEDIUM, some packages (Restify: 52 MEDIUM hits) still scored too high from MEDIUM volume alone (52 × 3 = 156 points before cap)
+- New scoring cap: `prototype_hook` MEDIUM findings contribute at most 15 points (equivalent to 5 × MEDIUM=3)
+- Applied in the scoring function in `src/index.js`
+- Rationale: 52 MEDIUM hits should not produce a score of 100. The cap limits prototype hook MEDIUM contribution without affecting packages with few hits.
+
+### Results: FPR 19.4% → 17.5%
+
+Measured on the full 529-package benign dataset (527 scanned, 2 skipped).
+
+**10 packages rescued** (from FP to clean):
+
+| Package | Before | After | Primary correction |
+|---------|--------|-------|--------------------|
+| restify | 100 | 15 | prototype_hook MEDIUM cap |
+| html-minifier-terser | 88 | 16 | obfuscation in dist → LOW |
+| request | 87 | 15 | prototype_hook MEDIUM cap |
+| terser | 41 | 17 | obfuscation in dist → LOW |
+| prisma | 38 | 14 | env_access prefix filtering |
+| luxon | 36 | 9 | env_access safe vars |
+| markdown-it | 35 | 2 | obfuscation in dist → LOW |
+| exceljs | 29 | 11 | dataflow >5 → LOW |
+| csso | 26 | 8 | obfuscation in dist → LOW |
+| svgo | 23 | 14 | obfuscation count >3 → LOW |
+
+### Safety verification
+
+All corrections verified against adversarial and holdout datasets:
+- **TPR**: 100% (4/4) — no regression
+- **ADR**: 100% (35/35) — all 35 adversarial samples still detected
+- **Holdouts**: 40/40 across v2, v3, v4, v5 — all pass
+
+---
+
+## 9. FPR by Package Size (v2.2.10)
+
+### Methodology
+
+For each of the 527 scanned benign packages, the number of `.js` files in the extracted tarball (`.muaddib-cache/benign-tarballs/`) was counted recursively (excluding `node_modules`). Packages were grouped into 4 size categories and FPR computed per category.
+
+488 out of 527 packages were matched (41 scoped `@scope/pkg` packages not resolved in the cache due to directory naming, 2 skipped due to download failure). The 41 unmatched scoped packages contain 7 additional FPs (`@prisma/client` 100, `@changesets/cli` 96, `@vue/compiler-sfc` 65, `@napi-rs/cli` 56, `@swc/core` 42, `@storybook/react` 26, `@nestjs/core` 23).
+
+### Results
+
+| Category | Packages | FP (>20) | FPR | Avg Score | Avg .js Files |
+|----------|----------|----------|-----|-----------|---------------|
+| **Small** (<10 .js) | 251 | 15 | **6.0%** | 5.4 | 3 |
+| **Medium** (10-50 .js) | 137 | 27 | **19.7%** | 15.0 | 25 |
+| **Large** (50-100 .js) | 38 | 14 | **36.8%** | 29.8 | 66 |
+| **Very large** (100+ .js) | 62 | 29 | **46.8%** | 38.2 | 400 |
+
+### Top 3 worst FPs per category
+
+**Small (<10 .js):**
+- `yarn` (score 100, 4 .js) — bundled monolithic CLI
+- `typescript` (score 100, 9 .js) — minified compiler
+- `esbuild` (score 83, 2 .js) — native bundler wrappers
+
+**Medium (10-50 .js):**
+- `total.js` (score 100, 19 .js) — template engine with eval
+- `htmx.org` (score 100, 28 .js) — eval for dynamic CSS expressions
+- `vite` (score 100, 19 .js) — bundler with dynamic require/import
+
+**Large (50-100 .js):**
+- `mocha` (score 100, 62 .js) — test runner with dynamic require
+- `vitest` (score 100, 61 .js) — test runner
+- `lerna` (score 100, 56 .js) — monorepo tool
+
+**Very large (100+ .js):**
+- `next` (score 100, 3162 .js) — 76 dynamic_require, 45 dynamic_import, 41 obfuscation
+- `gatsby` (score 100, 544 .js) — plugin system, HMR
+- `moleculer` (score 100, 143 .js) — microservice framework
+
+### Fine-grained correlation
+
+| JS Files | Packages | FP | FPR | Avg Score |
+|----------|----------|-----|-----|-----------|
+| 0 | 21 | 1 | 4.8% | 3.2 |
+| 1-5 | 176 | 6 | **3.4%** | 4.1 |
+| 6-10 | 58 | 8 | 13.8% | 10.2 |
+| 11-25 | 73 | 14 | 19.2% | 15.1 |
+| 26-50 | 60 | 13 | 21.7% | 15.7 |
+| 51-100 | 38 | 14 | 36.8% | 29.8 |
+| 101-200 | 27 | 10 | 37.0% | 28.6 |
+| 201-500 | 21 | 10 | 47.6% | 35.7 |
+| **500+** | **14** | **9** | **64.3%** | **60.5** |
+
+### Key observations
+
+1. **Linear correlation**: FPR goes from 3.4% (1-5 .js files) to 64.3% (500+ .js files). More code = more findings = higher score.
+2. **Critical threshold at ~50 .js files**: below 50, FPR stays under 22%. Above 50, FPR exceeds 36%.
+3. **Small packages (51% of dataset) have excellent FPR of 6%** — heuristics work well for typical libraries. Most npm packages are small, so the 6% is the most representative metric for real-world usage.
+4. **Score-100 packages in "small" category** (yarn, typescript) are special cases: monolithic bundlers that compress everything into 1-2 enormous minified files that trigger obfuscation + eval heuristics.
+5. **Very large packages (100+ .js) are inherently noisy**: they are full frameworks (Next.js, Gatsby, Webpack) that legitimately use dynamic require/import, eval, prototype extensions, env access, and other patterns that overlap with malware techniques. This is a fundamental challenge for static heuristic-based scanners — not a bug.
+
+---
+
+## 10. Per-File Max Scoring (v2.2.11)
+
+### Problem
+
+The global scoring approach sums findings across ALL files in a package. A framework with 500 JS files accumulates LOW/MEDIUM findings and easily exceeds the FP threshold (>20), even though no single file is suspicious. Meanwhile, malware concentrates everything in 1-2 files.
+
+### Solution
+
+Replace global score accumulation with per-file max scoring:
+
+```
+riskScore = min(100, max(file_scores) + package_level_score)
+```
+
+- **File-level threats** (AST, dataflow, obfuscation, entropy findings tied to specific source files) are grouped by file. Each file group is scored independently using the same severity weights (CRITICAL=25, HIGH=10, MEDIUM=3, LOW=1). The highest-scoring file determines `maxFileScore`.
+- **Package-level threats** (lifecycle scripts, typosquat, IOC matches, sandbox findings, cross-file dataflow) are scored separately as `packageScore`.
+- The old global sum is preserved as `globalRiskScore` for comparison.
+
+### Why it works
+
+Malware typically has 1-2 files with high concentration of dangerous patterns (credential read + network send + obfuscation in a single file). Per-file scoring preserves this signal. Large frameworks have low scores per file but many files — per-file max eliminates the accumulation effect.
+
+### Results: FPR 17.5% → 13.1%
+
+| Metric | v2.2.10 | v2.2.11 |
+|--------|---------|---------|
+| **TPR** | 100% (4/4) | 100% (4/4) |
+| **FPR** (global) | 17.5% (92/527) | **13.1% (69/527)** |
+| **FPR** (standard, <10 .js) | 6.0% (15/251) | **6.2% (18/290)** |
+| **FPR** (medium, 10-50 .js) | 19.7% (27/137) | **11.9% (16/135)** |
+| **FPR** (large, 50-100 .js) | 36.8% (14/38) | **25.0% (10/40)** |
+| **FPR** (very large, 100+ .js) | 46.8% (29/62) | **40.3% (25/62)** |
+| **ADR** | 100% (35/35) | 100% (35/35) |
+| **Holdouts** | 40/40 | 40/40 |
+
+The biggest improvements are on medium (+7.8pp) and large (+11.8pp) packages, where score accumulation was the primary FP driver. Small packages see a slight increase (6.0%→6.2%) due to category boundary shifts, not regression.
+
+### Safety verification
+
+- **ADR**: 100% (35/35). One sample (`bun-runtime-evasion`) scored 28 with per-file scoring (was 30 threshold). Threshold adjusted from 30 to 25 — per user constraint: "adjust the sample threshold, not the scoring."
+- **Holdouts**: 40/40 across all 5 batches. No regression.
+
+---
+
+## 11. FP Reduction P2 (v2.3.0)
+
+### Approach: dataflow source categorization + module_compile threshold + dep whitelist
+
+Building on v2.2.11's per-file max scoring, v2.3.0 applies 3 corrections targeting the top remaining FP sources identified in [FPR_REMAINING_47.md](FPR_REMAINING_47.md).
+
+### 3 corrections
+
+**Correction 1 — Dataflow source categorization:**
+- Split os.* methods into two categories: identity sources (`fingerprint_read`: hostname, networkInterfaces, userInfo, homedir) and telemetry sources (`telemetry_read`: platform, arch)
+- Removed pure telemetry methods (cpus, totalmem) from source tracking entirely
+- Telemetry-only findings: if ALL sources in a dataflow finding are `telemetry_read` and severity is CRITICAL, downgrade to HIGH
+- Rationale: `os.platform` + `fetch` is legitimate (platform-specific binary download in esbuild, node-gyp). `os.homedir` + `fetch` is always suspicious (wallet/credential theft).
+
+**Correction 2 — `module_compile` count-based downgrade:**
+- Added `module_compile: { maxCount: 3, from: 'CRITICAL', to: 'LOW' }` to `FP_COUNT_THRESHOLDS`
+- Mirrors existing `module_compile_dynamic` threshold
+- Rationale: mathjs has 14 CRITICAL `module_compile` hits (expression compilation), nunjucks has 3+ (template compilation). These are legitimate compile-time patterns.
+
+**Correction 3 — Dependency scanner whitelist + npm alias skip:**
+- `DEP_FP_WHITELIST`: es5-ext (protest-ware, not malware) and bootstrap-sass (deprecated, not malicious)
+- npm alias skip: dependencies with `npm:` prefix (`"typescript3": "npm:typescript@^3.1.6"`) are virtual aliases, not real package names. IOC matching on alias names produces false positives.
+
+### Results: FPR ~13% → 8.9%
+
+Measured on full 529-package benign dataset (527 scanned, 2 skipped).
+
+### Safety verification
+
+- **TPR**: 91.8% (45/49) — no regression
+- **ADR**: 98.7% (77/78) — `conditional-os-payload` threshold adjusted from 25 to 20 to accommodate new scoring
+- 1 ADR miss documented: `conditional-os-payload` (score 20 = threshold 20, PASS after threshold adjustment)
+
+---
+
+## 12. FP Reduction P3 (v2.3.1)
+
+### Approach: single-hit downgrade + HTTP client whitelist + bundle detection + encoding tables
+
+4 corrections targeting remaining FP sources.
+
+### 4 corrections
+
+**Correction 1 — `require_cache_poison` single hit CRITICAL→HIGH:**
+- A single `require.cache` access is plugin dedup or hot-reload behavior, not malware
+- Malware poisons cache repeatedly; single access is framework behavior (fastify, mocha)
+- Count threshold >3 already existed (CRITICAL→LOW); this adds: count == 1 → HIGH
+
+**Correction 2 — `prototype_hook` HTTP client whitelist:**
+- Packages with >20 `prototype_hook` hits are HTTP client libraries (superagent: 78, undici: 12)
+- If message matches HTTP methods (Request, Response, fetch, get, post, put, delete, patch, head, options, query, command), downgrade to MEDIUM
+- Rationale: HTTP clients legitimately patch prototypes as their core functionality
+
+**Correction 3 — Obfuscation bundle detection for .cjs/.mjs >100KB:**
+- Large `.cjs`/`.mjs` files are clearly bundled output, not hand-written obfuscated attack code
+- Treated as `isPackageOutput` (same as .min.js, .bundle.js, dist/build paths) → LOW severity
+- Rationale: zod's `types.cjs` (CRITICAL) and typescript's bundled `.mjs` output were false positives
+
+**Correction 4 — `high_entropy_string` encoding table path → LOW:**
+- Files in paths matching `/encoding|tables|unicode|charmap|codepage/i` contain legitimate high-entropy data (character encoding tables)
+- Downgraded to LOW instead of MEDIUM/HIGH
+- Rationale: iconv-lite (53 entropy points from encoding tables) was the #1 entropy FP
+
+### Results: FPR 8.2% → 7.4%
+
+Measured on full 529-package benign dataset (525 scanned, 4 skipped).
+
+### Safety verification
+
+- **TPR**: 91.8% (45/49) — no regression
+- **ADR**: 98.7% (77/78) — 1 documented miss: `require-cache-poison` adversarial sample scores 10 (single CRITICAL→HIGH downgrade) < threshold 20
+- The miss is an accepted trade-off: the single-hit downgrade rescues fastify, mocha, moleculer from FP status, which outweighs missing one adversarial sample whose single `require.cache` access is indistinguishable from legitimate plugin behavior
+
+---
+
+## 13. Dynamic Analysis: Multi-Run Sandbox with Preload Monkey-Patching (v2.4.9)
+
+### Problem
+
+Time-bomb malware uses `setTimeout(fn, 72*3600000)` or `Date.now()` checks to delay payload execution past sandbox timeouts. MITRE ATT&CK T1497.003 (Time Based Evasion Checks) has become a top-10 evasion technique in 2026 supply-chain attacks. The existing sandbox (strace + tcpdump, 120s timeout) cannot detect payloads that never execute during analysis.
+
+### Approach: Runtime Monkey-Patching + Multi-Run
+
+**Preload script** (`docker/preload.js`): A self-contained IIFE injected via `NODE_OPTIONS=--require /opt/preload.js` that patches all time-related and sensitive APIs at runtime:
+
+- **Time APIs**: `Date.now()`, `Date` constructor (no-arg), `performance.now()`, `process.hrtime()`, `process.hrtime.bigint()`, `process.uptime()` — all shifted by `MUADDIB_TIME_OFFSET_MS` environment variable
+- **Timer APIs**: `setTimeout` delay forced to 0 (immediate execution), `setInterval` first callback executed immediately
+- **Network APIs**: `http.request`, `https.request`, `fetch`, `dns.resolve`, `dns.lookup`, `net.connect` — logged with host/method/path
+- **Filesystem APIs**: `fs.readFileSync`, `fs.readFile`, `fs.writeFileSync`, `fs.writeFile` — logged, with sensitive path detection (`.npmrc`, `.ssh`, `.aws`, `.env`, `id_rsa`, `credentials`)
+- **Process APIs**: `child_process.exec/execSync/spawn/spawnSync/execFile/execFileSync` — logged, with dangerous command detection (curl, wget, bash, sh, powershell)
+- **Environment**: `process.env` wrapped in Proxy for sensitive key access logging (TOKEN, SECRET, KEY, PASSWORD patterns)
+
+All originals are saved in a closure scope inaccessible to the target package. Every patch is try/catch guarded to never break the analyzed package.
+
+**Multi-run orchestration** (`src/sandbox/index.js`): The `runSandbox()` function executes 3 sequential Docker runs with different time offsets:
+
+| Run | Time Offset | Purpose |
+|-----|-------------|---------|
+| 1/3 | 0ms (immediate) | Baseline — detect immediate threats |
+| 2/3 | 259200000ms (72h) | Trigger 3-day time-bombs |
+| 3/3 | 604800000ms (7d) | Trigger 1-week time-bombs |
+
+Each run uses `runSingleSandbox()` with a 60s timeout. Early exit on score >= 80 (CRITICAL found). The highest-scoring run result is returned with an `all_runs` metadata array.
+
+**Preload log analyzer** (`src/sandbox/analyzer.js`): Parses `[PRELOAD]`-prefixed log lines from `/tmp/preload.log` and produces scored findings:
+
+| Rule | Condition | Severity | Score |
+|------|-----------|----------|-------|
+| Timer delay suspicious | delay > 1h | MEDIUM | +15 |
+| Timer delay critical | delay > 24h (supersedes suspicious) | CRITICAL | +30 |
+| Sensitive file read | .npmrc/.ssh/.aws/.env path detected | HIGH | +20 |
+| Network after sensitive read | Network call after sensitive file read (compound) | CRITICAL | +40 |
+| Exec suspicious | curl/wget/bash/sh/powershell command | HIGH | +25 |
+| Env token access | TOKEN/SECRET/KEY/PASSWORD pattern | MEDIUM | +10 |
+
+### Safety Considerations
+
+- **Benign package impact**: Preload logging should not trigger on benign packages because scoring requires suspicious patterns (>1h timers, sensitive file reads, dangerous commands). Standard `npm install` does not produce these patterns.
+- **Timer acceleration risk**: Forcing all `setTimeout` delays to 0 could cause test suites or build scripts to behave differently. This is acceptable in the sandbox context where the goal is threat detection, not functional testing.
+- **Score combination**: Preload findings are combined with strace/tcpdump findings. The total is capped at 100.
+
+### 6 New Rules
+
+| ID | Type | Severity | MITRE |
+|----|------|----------|-------|
+| MUADDIB-SANDBOX-009 | `sandbox_timer_delay_suspicious` | MEDIUM | T1497.003 |
+| MUADDIB-SANDBOX-010 | `sandbox_timer_delay_critical` | CRITICAL | T1497.003 |
+| MUADDIB-SANDBOX-011 | `sandbox_preload_sensitive_read` | HIGH | T1552.001 |
+| MUADDIB-SANDBOX-012 | `sandbox_network_after_sensitive_read` | CRITICAL | T1041 |
+| MUADDIB-SANDBOX-013 | `sandbox_exec_suspicious` | HIGH | T1059 |
+| MUADDIB-SANDBOX-014 | `sandbox_env_token_access` | MEDIUM | T1552.001 |
+
+---
+
+## 14. Current Metrics (v2.11.48 — full re-measurement 2026-05-26)
+
+| Metric | Result | Description |
+|--------|--------|-------------|
+| **Wild TPR** (Datadog 17K) | **92.8%** (13,538/14,587 in-scope) | 17,922 packages. 3,335 skipped (no JS). compromised_lib 97.8%, malicious_intent 92.1% (see section 15). Last measurement v2.9.4 — independent of the ground truth, not re-run in v2.11.48. |
+| **TPR@3** (Ground Truth, v2.11.48) | **95.74%** (90/94 in-scope) | Full measurement on enriched GT. **96 real-world attacks** (94 in-scope; 2 out-of-scope GT-005 colors / GT-009 faker, protestware with `min_threats=0`). Enrichment 2026-05-25: +22 samples (Track C synthetic for PYSRC/PYAST/AST-092/AICONF-004/PKG-022, Track A real tarballs from VPS archive, Track B reconstructions from `data/all-review-results.json`). 13 PyPI samples (was 0). |
+| **TPR@20** (Ground Truth, v2.11.48) | **88.30%** (83/94 in-scope) | Operational alert threshold = 20. **+3.1pp vs v2.11.47** — Track D `recon_exfil_direct_ip` compound (MUADDIB-COMPOUND-016, sameFile) closed GT-095 gap (risk 3→50) and `linux_fingerprint_exec` (AST-093) boosted GT-091/GT-092. 2 remaining `tpr3-only` samples by design (GT-072, GT-077). |
+| **FPR** (Benign curated, v2.11.48) | **1.10%** (6/545 scanned of 548) | **Unchanged after Track D** — the new compound + types created zero new FPs (sameFile gate + public-IP-only filter). Drop from 15.6% (v2.10.95) attributable to F1-F14 contextual FP caps (v2.10.97 → v2.11.31). 6 remaining FPs are real legit-pattern hits: meteor, prisma, @prisma/client, drizzle-orm, scrypt, liquid. |
+| **FPR after ML T1 (offline replay, v2.11.48)** | **1.10%** (6/545) | Same as raw — classifier filters 0 additional FPs in this run. **Not applied to `muaddib scan`**; only `evaluate` runs it. Kept as a reference for retrain validation. |
+| **FPR** (Benign random, v2.11.48) | **2.50%** (5/200) | 200 random npm packages, stratified sampling. Down from 7.0% at v2.10.95. |
+| **FPR PyPI** (v2.11.48, first honest measurement) | **9.68%** (12/124 scanned of 132) | **Track D fixed the PyPI downloader** — removed `pip --no-binary :all:` (forced compile of wheel-only packages, timed out 38% of the time) + added `.whl` extraction via `extractArchive()`. Brought 42 previously-skipped giants (numpy/pandas/django/matplotlib/scikit-learn/...) into scope. All 12 FPs cluster at score 25-35: this is the cap-PyPI-35 artifact (Track E target), not new rule misfires. 8 residual fails are >500MB packages (torch, tensorflow, scipy, opencv-python, ansible, playwright) hitting the 30s `PACK_TIMEOUT_MS`. |
+| **ADR** (Adversarial + Holdout, v2.11.48) | **96.26%** (103/107) | 67 adversarial + 40 holdout. 107 available on disk. Global threshold=20. Stable vs v2.10.95. |
+| **Holdout v1** (pre-tuning) | 30% (3/10) | 10 unseen samples before rule corrections |
+| **Holdout v2** (pre-tuning) | 40% (4/10) | 10 unseen samples before rule corrections |
+| **Holdout v3** (pre-tuning) | 60% (6/10) | 10 unseen samples before rule corrections |
+| **Holdout v4** (pre-tuning) | 80% (8/10) | 10 unseen samples testing deobfuscation |
+| **Holdout v5** (pre-tuning) | 50% (5/10) | 10 unseen samples testing inter-module dataflow |
+| **Vague 4** (pre-fix) | 0% (0/5) | 5 adversarial samples testing string concat evasion, compound patterns |
+
+v2.2.12: Ground truth expanded from 4 to 49 samples. v2.2.13: ADR 75/75 → 78/78. v2.2.22: scan freeze fix. v2.2.23: .npmignore excludes malware. v2.2.24: tests 862 → 1317, coverage 72% → 86%. v2.3.0: FPR ~13% → 8.9% (P2). v2.3.1: FPR 8.2% → 7.4% (P3), 8 new rules (102 total), tests 1317 → 1387, ADR 100% → 98.7% (1 documented miss). **v2.4.7**: Vague 4 (5 adversarial samples, 5 bypass corrections, 3 new rules), ADR 98.7% → 98.8% (82/83), 107 total rules (102 RULES + 5 PARANOID). **v2.4.9**: Sandbox preload monkey-patching (multi-run [0h, 72h, 7d], time-bomb detection), 6 new sandbox preload rules (SANDBOX-009 to 014), 113 total rules (108 RULES + 5 PARANOID), tests 1471 → 1522. **v2.5.0-v2.5.6**: Security audit (41 issues remediated). **v2.5.7-v2.5.8**: FP Reduction P4, FPR 7.4% → 6.0% (included BENIGN_PACKAGE_WHITELIST bias). **v2.5.13-v2.5.14**: Audit hardening (scoring, IOC, sandbox, dataflow, deobfuscation, AST bypasses, shell patterns, entropy, typosquat), 121 rules (116 RULES + 5 PARANOID), tests 1656 → 1815. **v2.5.15-v2.5.16**: FP Reduction P5/P6, FPR ~13.6% → 12.3% (honest measurement without whitelisting), TPR 91.8% → 93.9%. **v2.6.0**: Intent graph v2, Red Team DPRK (10 adversarial samples), zero FP added. **v2.6.1**: Module-graph bounded path, zero FP added. **v2.6.2**: FP Reduction P7, FPR 12.3% → 12.1%, ADR denominator fixed (count only available samples).
+
+**FPR progression**: 0% (invalid, v2.2.0–v2.2.6) → 38% (first real measurement, v2.2.7) → 19.4% (v2.2.8) → 17.5% (v2.2.9) → ~13% (v2.2.11, per-file max scoring) → 8.9% (v2.3.0, P2) → 7.4% (v2.3.1, P3) → 6.0% (v2.5.8, P4 + whitelist bias) → ~13.6% (v2.5.14, audit hardening + whitelist removed) → 12.3% (v2.5.16, P5+P6) → 12.1% (v2.6.2, P7) → 12.9% (v2.9.4, compound scoring + new rules) → **10.8%** (v2.10.1, audit v3 FP reduction) → **14.0%** (v2.10.57, curated benign corpus rebuild) → **estimated 6-9%** (v2.10.74, P1-P4 FP cluster fixes — projected gain at the time) → **v2.10.93-94** (security review remediation: 9 ltidi stub packages, 3 csec credential stealers, koa-v3 OAST DNS exfil, +2 rules `external_tarball_dep` PKG-020 + `function_runtime_args` AST-090, floor 75 on 2+ distinct CRITICAL package-level types) → **v2.10.95** (`hasHashVerification` hardened; triple-gate downgrade abandoned after 0 FPR delta. Actual FPR re-measurement on rebuilt 548-package corpus produced **15.6% (85/545 scanned)** — the v2.10.74 projected 6-9% reduction did NOT materialize; canonical metric in `metrics/v2.10.95.json`) → **v2.10.96** (8 ML contextual features F1-F8 wired in `feature-extractor.js`, F8 disabled due to incomplete `EGRESS_TYPES`, no scoring change) → **v2.10.97 → v2.11.31** (14 contextual FP caps F1-F14 in `applyContextualFPCaps()` deterministic post-filter, including the HARD/SOFT exfil split (F14) that addressed the 41/46 packages still ≥ 90 after F1-F13) → **v2.11.47** (full re-measurement on the 548-package curated corpus: **1.10% (6/545 scanned)** — the compounding effect of F1-F14 over 11 versions drove the rate from 15.6% to 1.10%. ML T1 filter brings it down further to **0.92% (5/545)**. The 6 raw FPs are meteor, prisma, @prisma/client, drizzle-orm, scrypt, liquid — all real legitimate-pattern hits, not whitelist artifacts. Canonical metric in `metrics/v2.11.47.json`).
+
+> **Note on FPR evolution:** The historic 6.0% FPR (v2.5.8) relied on a `BENIGN_PACKAGE_WHITELIST` that excluded certain known packages from scoring — a data leakage bias removed in v2.5.10. The current canonical FPR is **1.10% (6/545 scanned of 548, v2.11.47 measurement)**, an honest measurement without whitelisting on the rebuilt curated corpus. Unlike the 6.0% v2.5.8 figure, the 1.10% comes from genuine FP reduction via F1-F14 contextual caps — not from hiding packages.
+
+Run `muaddib evaluate` to reproduce these metrics locally. Results are saved to `metrics/v{version}.json`.
+
+---
+
+## 15. Datadog 17K Benchmark
+
+### Source
+
+The [DataDog Malicious Software Packages Dataset](https://github.com/DataDog/malicious-software-packages-dataset) is an open-source collection of 17,922 real malware samples from the npm ecosystem, organized by category (`malicious_intent`, `compromised_lib`). Each sample is a password-protected zip archive of the original malicious package as published to npm.
+
+### Methodology
+
+1. **Automated scan**: All 17,922 samples were extracted and scanned using `run()` from `src/index.js` with `_capture: true` and `deobfuscate: true`. Results saved to `datasets/real-world/datadog-benchmark-results.json`.
+2. **Out-of-scope filtering**: Packages containing no JavaScript files (no `.js`, `.mjs`, `.cjs` files) are classified as out-of-scope and skipped. These are packages that MUAD'DIB cannot analyze by design (native binaries, phishing HTML pages, etc.).
+3. **In-scope detection**: The Wild TPR is computed only on in-scope packages (those containing at least one JS file).
+
+### Results (v2.9.4)
+
+| Metric | Value |
+|--------|-------|
+| Total packages | 17,922 |
+| Out-of-scope (no JS files) | 3,335 |
+| In-scope | 14,587 |
+| Detected (score > 0) | 13,486 |
+| Missed (score = 0, in-scope) | 1,101 |
+| Errors | 0 |
+| **Wild TPR** | **92.5%** (13,486 / 14,587) |
+
+### Results by Category
+
+| Category | In-scope | Detected | Skipped (no JS) | Wild TPR |
+|----------|----------|----------|-----------------|----------|
+| **compromised_lib** | 924 | 904 | 0 | **97.8%** |
+| **malicious_intent** | 13,663 | 12,582 | 3,335 | **92.1%** |
+
+### Methodology Change from v1 Benchmark
+
+The original benchmark (v2.3.0) reported 88.2% raw TPR (15,810/17,922) with 2,077 misses manually categorized as out-of-scope (1,233 phishing HTML, 824 native binaries, 20 corrected libraries) and an adjusted TPR of ~100%.
+
+The v2 benchmark (v2.9.4) improves the methodology by automatically skipping packages with no JS files as out-of-scope, rather than counting them as misses. This gives a more honest and reproducible metric:
+- **v1 (v2.3.0)**: 88.2% raw, ~100% adjusted (manual categorization)
+- **v2 (v2.9.4)**: 92.5% Wild TPR (automated scope filtering, 1,101 in-scope misses)
+
+The 1,101 in-scope misses are genuine detection gaps where JS files exist but the scanner does not flag them. These represent opportunities for future detection improvement.
+
+### Why Out-of-Scope Packages Are Skipped
+
+MUAD'DIB is a **Node.js static analyzer** that performs AST parsing, dataflow analysis, and behavioral pattern matching on JavaScript code. Its detection engine looks for:
+- Dangerous API calls (`child_process.exec`, `eval`, `Function()`)
+- Credential access (`fs.readFileSync` on sensitive paths, `process.env`)
+- Network exfiltration (`http.request`, `dns.resolve`, `fetch`)
+- Obfuscation patterns (charcode reconstruction, base64 encoding, hex arrays)
+- Supply-chain signals (lifecycle scripts, typosquatting, IOC matches)
+
+Packages with no JavaScript files (native binaries, phishing HTML pages) cannot be analyzed by a JS static analyzer. Skipping them provides a more meaningful detection rate than counting them as misses.
+
+### Transparency
+
+The Wild TPR of 92.5% reflects detection on in-scope packages only (those containing JS files). The 3,335 out-of-scope packages and 1,101 in-scope misses are reported transparently. The in-scope misses are not hidden or excused — they are genuine gaps where the scanner has room for improvement.
+
+## 16. ML Classifier — Status & Retrain (offline only; moved from README 2026-07-01)
+
+The XGBoost classifier (`src/ml/classifier.js`) is **not wired into `muaddib scan`** and has never affected an operator's scan result. In `muaddib monitor` it runs **LOG-ONLY since 2026-04-08** (`src/monitor/queue.js:1154`): the trained model collapsed — it predicts p≈0.002 for every input, including clearly malicious lifecycle+exec+staged-payload patterns — and was disabled pending retrain on balanced JSONL data. The published operational FPR/TPR are therefore **rules-only**.
+
+The numbers below come from offline `muaddib evaluate` replay against a frozen bench. They describe what the model *would* contribute if it worked, not what an operator gets today.
+
+| Metric (offline `evaluate` replay) | Result | Details |
+|--------|--------|---------|
+| ML FPR | 2.85% (239/8,393 holdout) | XGBoost, 56,564 samples, 64 features, threshold=0.710 |
+| ML TPR | 99.93% (2,918/2,920 holdout) | 377 confirmed_malicious via OSSF/GHSA/npm correlation |
+| FPR after ML T1 (v2.11.48) | 1.10% (6/545) | Classifier filters 0/6 raw FPs — never applied during real scans |
+
+**Retrain methodology (v2.10.51):** ground truth = 377 confirmed_malicious via auto-labeler (OSSF malicious-packages, GitHub Advisory Database, npm takedown correlation); dataset = 56,564 samples (14,602 malicious / 41,962 clean), stratified 80/20; grid search depth=4, estimators=300, lr=0.05, AUC-ROC=0.999, F1=0.960; 23 leaky/dead features removed. When a retrained model passes shadow validation, the LOG-ONLY guard at `src/monitor/queue.js:1187` is flipped and these numbers move back into the operational table.
+
+## 17. Operational Coverage (v2.11.67+) & Known Caveats (moved from README 2026-07-01)
+
+The static ground-truth TPR in section 14 is measured offline. Since v2.11.67 the monitor also tracks **operational** coverage on live npm/PyPI ingestion:
+
+- A per-scan **ledger** (`data/scan-ledger.jsonl`) records every scanned package's outcome; `computeLedgerRollup()` produces a 24h rollup (`alertRate`, per-ecosystem) — a throughput signal, **not** detection TPR.
+- An active **GHSA poller** (~15 min; npm, pypi, crates) builds an authoritative "what should we have caught" denominator (`data/ghsa-malware.jsonl`) plus a feed-health alarm that fires when an IOC feed silently goes dark.
+- **coverage-audit** (`scripts/coverage-audit.js`, daily 05:00 UTC) joins that denominator against ledger outcomes + the tarball archive to compute an honest GHSA-denominated **operational TPR** (`alerted / total`), surfacing `scannedClean` misses as human-gated ground-truth candidates.
+
+**Cap PyPI at 35/100:** Python samples are capped at `riskScore=35` even when `globalRiskScore=100`. All 12 PyPI FPs (v2.11.48) cluster at 25-35 (flask 32, django 35, tornado 35, bottle 30, pandas 25, matplotlib 25, plotly 25, bokeh 25, pymongo 35, coverage 32, fabric 35, websockets 35) — the cap artifact, not new rule misfires. Lifting it would drop FPR PyPI toward 0% and unblock PyPI malware detection at higher thresholds (Track E).
+
+**Static evaluation caveats:** TPR measured on 94 in-scope samples (2 out-of-scope protestware GT-005/GT-009 with `min_threats=0`); TPR@3 = any signal, TPR@20 = operational alert threshold; FPR rules on 548 curated popular npm packages (not a random sample); FPR PyPI on 124/132 (8 packages >500MB time out); ADR at global threshold score >= 20.

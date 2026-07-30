@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blog / MUAD'DIB</title>
+  <meta name="description" content="Articles techniques sur la détection de menaces supply-chain npm et PyPI.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Blog / MUAD'DIB">
+  <meta property="og:description" content="Articles techniques sur la détection de menaces supply-chain npm et PyPI.">
+  <meta property="og:image" content="../img/og-default.png">
+  <meta property="og:site_name" content="MUAD'DIB">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Blog / MUAD'DIB">
+  <meta name="twitter:description" content="Articles techniques sur la détection de menaces supply-chain npm et PyPI.">
+  <meta name="twitter:image" content="../img/og-default.png">
+
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav>
+  <a href="../" class="site-name">muad-dib</a>
+  <a href="../">accueil</a>
+  <a href="./" class="active">blog</a>
+  <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">github</a>
+  <a href="https://www.npmjs.com/package/muaddib-scanner" target="_blank" rel="noopener">npm</a>
+</nav>
+
+<h1>Blog</h1>
+<p>Notes de terrain sur la détection de menaces supply-chain.</p>
+
+<hr>
+
+<ul class="post-list">
+
+  <li>
+    <span class="post-title"><a href="longzy-dprk-muaddib-evasion.html">Quand les attaquants codent l'évasion contre MUAD'DIB</a></span>
+    <br><span class="post-date">2026-07-01</span> <span class="tags"><span class="tag">détection</span> <span class="tag">dprk</span> <span class="tag">npm</span> <span class="tag">évasion</span> <span class="tag">sandbox</span> <span class="tag">live</span></span>
+    <p class="post-summary">Analyse d'une campagne npm attribuée au mode opératoire DPRK « Contagious Interview » : 5 packages sur 3 scopes, dont le payload teste le marqueur de sandbox MUADDIB_GVISOR (reconstruit par charcode). Détection statique de longzy-basic-ui (100/100, sandbox: none), analyse du .prepare.cjs (C2 Lark, sérialisation de process.env, exécution différée), perte de couverture par délestage mémoire et correctif anti-spill IOC-aware. Traitement retenu pour le marqueur.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="ground-truth-track-d.html">Ground truth +29 samples : pourquoi un TPR figé à 93,85% mesurait surtout l'IOC matching</a></span>
+    <br><span class="post-date">2026-05-26</span> <span class="tags"><span class="tag">ground-truth</span> <span class="tag">métriques</span> <span class="tag">pypi</span> <span class="tag">compound</span> <span class="tag">méthodologie</span></span>
+    <p class="post-summary">60 samples sur 67 attendaient juste MUADDIB-PKG-001. Le TPR mesurait l'IOC database, pas les 250+ règles comportementales. Track C (16 fixtures synthétiques), Track A (6 tarballs réels), Track B (7 reconstructions), Track D (compound direct-IP+linux-fingerprint), fix download PyPI 38% fail rate. TPR@20 +3,1pp (85,19% → 88,30%), FPR npm stable, FPR PyPI honnête à 9,68% sur 124/132 (was 6,10% sur 82/132 biaisé).</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="mini-shai-hulud-scoring-gap.html">Mini Shai-Hulud : 206 packages scannés, 113 passés sous le radar, autopsie d'un gap de scoring</a></span>
+    <br><span class="post-date">2026-05-12</span> <span class="tags"><span class="tag">scoring</span> <span class="tag">supply-chain</span> <span class="tag">npm</span> <span class="tag">retrospective</span> <span class="tag">TeamPCP</span> <span class="tag">shai-hulud</span></span>
+    <p class="post-summary">La campagne Mini Shai-Hulud de TeamPCP a compromis 200+ packages npm dont @tanstack/react-router (12M DL/semaine). MUAD'DIB a détecté les patterns mais le scoring les a écrasés à 2/100. Trois causes racines (reachability, isLargeJs, MT-1 cap), cinq correctifs, score final 100/100 CRITICAL.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="bcs-bank-dependency-confusion.html">@bcs-bank-complex-ui/deeplink : analyse d'un credential harvester multi-plateforme imitant un scope npm interne d'une banque russe</a></span>
+    <br><span class="post-date">2026-05-04</span> <span class="tags"><span class="tag">détection</span> <span class="tag">npm</span> <span class="tag">dependency-confusion</span> <span class="tag">credential-harvester</span> <span class="tag">live</span></span>
+    <p class="post-summary">Détection live d'un package npm publié sous un scope interne deviné, payload de stage 2 capturé en direct (250 lignes, 12 formats de credentials, remontée de 8 niveaux de /proc/&lt;ppid&gt;/environ), C2 hébergé en sous-domaine d'une vitrine SaaS russe de réservation pour stations de lavage automobile.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="athena-ui-components-campaign.html">Packages @athena-ui-components : analyse d'une campagne de dependency confusion revendiquant un programme bug bounty non listé publiquement</a></span>
+    <br><span class="post-date">2026-04-20</span> <span class="tags"><span class="tag">détection</span> <span class="tag">npm</span> <span class="tag">dependency-confusion</span> <span class="tag">oast</span> <span class="tag">bug-bounty</span></span>
+    <p class="post-summary">22 tarballs archivés sous un scope npm, 3 variantes de payload, exfiltration triple canal (HTTP, DNS, Discord), revendication d'un programme YesWeHack DBS Bank non vérifiable publiquement.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="quand-le-ml-ne-marche-pas.html">Quand le ML ne marche pas : pourquoi j'ai remplacé un classifier par des règles déterministes</a></span>
+    <br><span class="post-date">2026-04-19</span> <span class="tags"><span class="tag">ml</span> <span class="tag">retrospective</span> <span class="tag">xgboost</span> <span class="tag">post-filtre</span> <span class="tag">méthodologie</span></span>
+    <p class="post-summary">AUC 0.999 sur corpus pollué vs AUC 0.9917 sur corpus humain propre. Pourquoi XGBoost ne marche pas sur 302 samples et comment un post-filtre déterministe a réduit les FP CRITICAL de 33.8%.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="52-malwares-15-jours.html">52 malwares en 15 jours : review manuelle de 14 373 tarballs npm</a></span>
+    <br><span class="post-date">2026-04-14</span> <span class="tags"><span class="tag">detection</span> <span class="tag">malware</span> <span class="tag">npm</span> <span class="tag">review</span> <span class="tag">campagnes</span> <span class="tag">scoring</span></span>
+    <p class="post-summary">Review de securite complete sur 15 jours d'archives npm. 52 malwares confirmes dans 7 campagnes distinctes, dont 12 que le scanner avait sous-scores. 5 nouvelles regles implementees.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="logkitx-dprk-dependency-chain.html">logkitx : anatomie d'une chaîne de dépendances DPRK</a></span>
+    <br><span class="post-date">2026-04-08</span> <span class="tags"><span class="tag">détection</span> <span class="tag">dprk</span> <span class="tag">lazarus</span> <span class="tag">npm</span> <span class="tag">dependency-chain</span> <span class="tag">live</span></span>
+    <p class="post-summary">Trois packages npm, une chaîne de dépendances, un infostealer Lazarus. Comment MUAD'DIB détecte logkitx et dev-log-core — et pourquoi logger-base passe à travers.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="react-emits-malware.html">react-emits : un malware npm détecté en live et reporté</a></span>
+    <br><span class="post-date">2026-04-05</span> <span class="tags"><span class="tag">détection</span> <span class="tag">malware</span> <span class="tag">npm</span> <span class="tag">report</span> <span class="tag">live</span></span>
+    <p class="post-summary">4 versions en 4 heures, un path.js copie du module natif avec deux IIFE fetch+eval injectées, et des dépendances qui shadow fs, process et path. Score 100, reporté à npm.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="retrain-auto-labeler.html">FPR 11% à 2.85% : quand le ground truth vient de l'extérieur</a></span>
+    <br><span class="post-date">2026-04-05</span> <span class="tags"><span class="tag">ml</span> <span class="tag">retrain</span> <span class="tag">auto-labeler</span> <span class="tag">xgboost</span> <span class="tag">data-leakage</span></span>
+    <p class="post-summary">49 malwares confirmés, un modèle qui tourne en rond, et un retrain à 100% de précision. Tout ce qui pouvait mal tourner a mal tourné.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="gvisor-sandbox-invisible.html">gVisor : le kernel qui rend la sandbox invisible</a></span>
+    <br><span class="post-date">2026-03-31</span> <span class="tags"><span class="tag">sandbox</span> <span class="tag">gvisor</span> <span class="tag">évasion</span> <span class="tag">détection</span></span>
+    <p class="post-summary">Les malwares détectent Docker en 3 lignes. gVisor intercepte les syscalls au niveau kernel. Le malware pense qu'il tourne sur une vraie machine.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="canisterworm-libfaketime.html">CanisterWorm : quand la sandbox est aveugle pendant 5 minutes</a></span>
+    <br><span class="post-date">2026-03-23</span> <span class="tags"><span class="tag">détection</span> <span class="tag">canisterworm</span> <span class="tag">sandbox</span> <span class="tag">libfaketime</span> <span class="tag">évasion</span></span>
+    <p class="post-summary">7 packages compromis détectés, verdict DORMANT SUSPECT au lieu de MALICIOUS. Le payload Python attendait 5 minutes. La sandbox n'attendait pas.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="ml-audit-fondamental.html">v2.10.5 - Quand un changement de label fait passer le ML de 37% à 98%</a></span>
+    <br><span class="post-date">2026-03-22</span> <span class="tags"><span class="tag">ml</span> <span class="tag">audit</span> <span class="tag">xgboost</span> <span class="tag">monitoring</span> <span class="tag">pipeline</span></span>
+    <p class="post-summary">3 mois de monitoring, 0 malware confirmé, 8176 labels contaminés. Comment un nettoyage de données a fait passer la précision ML de 37% à 98%.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="ml-classifier-phase2.html">Du rule-based au ML : un classifier XGBoost pour trier les faux positifs</a></span>
+    <br><span class="post-date">2026-03-20</span> <span class="tags"><span class="tag">ml</span> <span class="tag">xgboost</span> <span class="tag">faux-positifs</span> <span class="tag">architecture</span></span>
+    <p class="post-summary">Un classifier binaire XGBoost en JavaScript pur pour filtrer les faux positifs de la zone grise T1, sans aucune dépendance Python en production.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="red-team-blue-team.html">Red Team vs Blue Team : 107 échantillons adversariaux en 7 campagnes</a></span>
+    <br><span class="post-date">2026-03-17</span> <span class="tags"><span class="tag">red-team</span> <span class="tag">adversarial</span> <span class="tag">méthodologie</span></span>
+    <p class="post-summary">Comment tester un scanner de sécurité quand l'attaquant connaît les règles.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="benchmark-17k.html">92.5% de détection sur 17 000 malwares réels</a></span>
+    <br><span class="post-date">2026-03-14</span> <span class="tags"><span class="tag">benchmark</span> <span class="tag">datadog</span> <span class="tag">métriques</span></span>
+    <p class="post-summary">9 heures de benchmark sur le dataset Datadog. 14 587 packages in-scope, 13 486 détectés.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="glassworm-detection.html">GlassWorm : Unicode invisible et C2 blockchain Solana</a></span>
+    <br><span class="post-date">2026-03-10</span> <span class="tags"><span class="tag">détection</span> <span class="tag">glassworm</span> <span class="tag">unicode</span> <span class="tag">solana</span></span>
+    <p class="post-summary">433 packages npm compromis, du code caché dans des caractères zero-width, et un C2 sur la blockchain.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="sandbox-time-travel.html">Le sandbox qui voyage dans le temps</a></span>
+    <br><span class="post-date">2026-03-02</span> <span class="tags"><span class="tag">sandbox</span> <span class="tag">time-bomb</span> <span class="tag">évasion</span></span>
+    <p class="post-summary">Quand les malwares attendent 72h avant de voler les credentials, on accélère le temps.</p>
+  </li>
+
+  <li>
+    <span class="post-title"><a href="le-vrai-fpr.html">Le vrai FPR : quand 0% cache la réalité</a></span>
+    <br><span class="post-date">2026-02-21</span> <span class="tags"><span class="tag">métriques</span> <span class="tag">faux-positifs</span> <span class="tag">méthodologie</span></span>
+    <p class="post-summary">Notre taux de faux positifs était de 0%. En réalité, il était de 38%.</p>
+  </li>
+
+</ul>
+
+<footer>
+  MUAD'DIB / DNSZLSK / <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">source</a>
+</footer>
+
+</body>
+</html>

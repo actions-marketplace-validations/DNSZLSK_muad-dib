@@ -1,196 +1,187 @@
 # MUAD'DIB Threat Model
 
-## Ce que MUAD'DIB detecte
+## What MUAD'DIB Detects
 
-### Attaques Supply Chain npm & PyPI
-
-| Technique | Detection | Confidence |
-|-----------|-----------|------------|
-| Packages malveillants connus (npm) | Hash SHA256 + nom | HIGH |
-| Shai-Hulud v1/v2/v3 | Marqueurs + fichiers + comportements | HIGH |
-| event-stream (2018) | Nom + version | HIGH |
-| Typosquatting npm | Liste de packages connus | MEDIUM |
-| Protestware (node-ipc, colors) | Nom + version | HIGH |
-| Packages malveillants PyPI (14K+ depuis OSV dump) | Correspondance par nom | HIGH |
-| Typosquatting PyPI | Levenshtein + normalisation PEP 503 | MEDIUM |
-
-### Comportements malveillants
+### npm & PyPI Supply Chain Attacks
 
 | Technique | Detection | Confidence |
 |-----------|-----------|------------|
-| Vol de credentials (.npmrc, .ssh) | Analyse AST | HIGH |
-| Exfiltration via env vars (GITHUB_TOKEN) | Analyse AST | HIGH |
-| Execution de code distant (curl \| sh) | Pattern matching | HIGH |
+| Known malicious npm packages | SHA256 hash + name | HIGH |
+| Shai-Hulud v1/v2/v3 | Markers + files + behaviors | HIGH |
+| event-stream (2018) | Name + version | HIGH |
+| npm typosquatting | Popular package list | MEDIUM |
+| Protestware (node-ipc, colors) | Name + version | HIGH |
+| Malicious PyPI packages (14K+ from OSV dump) | Name matching | HIGH |
+| PyPI typosquatting | Levenshtein + PEP 503 normalization | MEDIUM |
+
+### Malicious Behaviors
+
+| Technique | Detection | Confidence |
+|-----------|-----------|------------|
+| Credential theft (.npmrc, .ssh) | AST analysis | HIGH |
+| Env var exfiltration (GITHUB_TOKEN) | AST analysis | HIGH |
+| Remote code execution (curl \| sh) | Pattern matching | HIGH |
 | Reverse shell | Pattern matching | HIGH |
 | Dead man's switch (rm -rf $HOME) | Pattern matching | HIGH |
-| Code obfusque | Heuristiques | MEDIUM |
+| Obfuscated code | Heuristics | MEDIUM |
+| High-entropy strings (base64, hex, encrypted) | Shannon entropy | MEDIUM |
+| Inter-module credential exfiltration | Dataflow analysis (module-graph) | HIGH |
+| Intra-file credential + network co-occurrence | Intent coherence analysis | HIGH |
 
-### Flux de donnees suspects
+### Dataflow Analysis
 
 | Technique | Detection | Confidence |
 |-----------|-----------|------------|
-| Lecture credential + envoi reseau | Analyse dataflow | HIGH |
-| Acces process.env + fetch/request | Analyse dataflow | HIGH |
+| Credential read + network send (same file) | Intra-file dataflow | HIGH |
+| Credential read + network send (cross-file) | Module graph taint propagation | HIGH |
+| process.env access + fetch/request | AST + dataflow | HIGH |
 
-## Ce que MUAD'DIB NE detecte PAS
+### CI-Aware Malware Detection (v2.1.2)
 
-### Limitations connues
+Some supply-chain malware only activates in CI/CD environments. It checks for variables like `CI`, `GITHUB_ACTIONS`, `GITLAB_CI` before executing its payload, staying dormant on local machines.
 
-| Technique | Raison |
+The MUAD'DIB sandbox simulates 6 CI environments: GitHub Actions, GitLab CI, Travis CI, CircleCI, Jenkins. CI-aware malware triggers its payload in the isolated container, enabling detection via strace, tcpdump, and filesystem diff.
+
+### Canary Tokens / Honey Tokens (v2.1.2)
+
+The sandbox injects 6 fake credentials as honeypots:
+
+| Token | Type | Purpose |
+|-------|------|---------|
+| GITHUB_TOKEN | Registry token | Detect GitHub token theft |
+| NPM_TOKEN | Registry token | Detect npm token theft |
+| AWS_ACCESS_KEY_ID | Cloud credential | Detect AWS key theft |
+| AWS_SECRET_ACCESS_KEY | Cloud credential | Detect AWS secret theft |
+| SLACK_WEBHOOK_URL | Messaging webhook | Detect Slack exfiltration |
+| DISCORD_WEBHOOK_URL | Messaging webhook | Detect Discord exfiltration |
+
+**Dual-layer detection:**
+1. **Dynamic tokens**: Random suffix generated per session via `canary-tokens.js`, injected via Docker `-e`
+2. **Static tokens**: Fallback values in `sandbox-runner.sh`, detected by `detectStaticCanaryExfiltration()`
+
+**7 detection vectors:** HTTP bodies, DNS queries, HTTP request URLs, TLS connections, filesystem changes, process commands, npm install output.
+
+If a package attempts to exfiltrate a canary token, it provides direct proof of malicious behavior (CRITICAL, +50 score, rule MUADDIB-CANARY-001).
+
+## What MUAD'DIB Does NOT Detect
+
+### Browser-Only Attacks (Out of Scope)
+
+MUAD'DIB is a Node.js static analyzer. Attacks using exclusively browser APIs (DOM, `document`, `window`, `XMLHttpRequest`) without any Node.js API are not detected. These 3 ground truth samples are documented as out of scope:
+
+| Sample | Technique | Why not detected |
+|--------|-----------|-----------------|
+| **lottie-player** | `document.createElement('script')` injection | Browser DOM API, no Node.js API |
+| **polyfill-io** | Script injection via browser CDN | Client-side resource modification, no Node.js code |
+| **trojanized-jquery** | jQuery DOM manipulation | jQuery/DOM browser API, no Node.js API |
+
+Impact on TPR: **90/94 in-scope = 95.74%** (v2.11.48 full measurement). 4 misses include the 3 browser-only attacks above plus 1 other. Ground truth expanded to **96 samples 2026-05-25** (94 active, 2 out-of-scope: GT-005 colors and GT-009 faker, both protestware with min_threats=0). The enrichment added 29 samples — 16 synthetic for the new PYSRC/PYAST/AST-092/AICONF-004/PKG-022 rules (GT-068..083), 6 real-world npm tarballs from VPS archive (GT-084..089: TrapDoor twins, dep-confusion, MCP exfil), 7 reconstructions from the in-house security-review benchmark (GT-090..096). First PyPI coverage: 13 samples.
+
+### Known Limitations
+
+| Technique | Reason |
 |-----------|--------|
-| Malware polymorphe avance | Pas de ML/machine learning, patterns statiques uniquement |
-| Obfuscation avancee | Heuristiques limitees, pas de desobfuscation automatique du JS |
-| Zero-day (packages inconnus) | Base IOC reactive |
-| Attaques via binaires natifs | Pas d'analyse binaire |
-| Backdoors subtiles | Pas de review de code semantique |
-| Time bombs (declenchement differe) | Pas d'analyse temporelle |
-| Contenu TLS chiffre | Capture SNI et correlation DNS/TLS, mais pas d'interception MITM |
-| Ecosystemes non supportes | Limite a npm et PyPI (pas RubyGems, Maven, Go) |
-| Dashboard/API cloud | Outil CLI local uniquement |
+| Advanced polymorphic malware | No ML/machine learning, static patterns only |
+| Advanced obfuscation | Static deobfuscation (v2.2.5) covers concat, charcode, base64, hex arrays + const propagation. Advanced obfuscators (JScrambler, control flow flattening) not covered |
+| Zero-day (unknown packages) | IOC database is reactive (v1.x); mitigated by behavioral detection (v2.0) and validated by ground truth (v2.1) |
+| Native binary attacks | No binary analysis |
+| Subtle backdoors | No semantic code review |
+| Encrypted TLS content | SNI capture and DNS/TLS correlation, but no MITM interception |
+| Unsupported ecosystems | Limited to npm and PyPI (no RubyGems, Maven, Go) |
+| Cloud dashboard/API | Local CLI tool only |
 
-### Faux negatifs potentiels
+### Potential False Negatives
 
-- Code malveillant dans des fichiers non-JS/non-Python (WASM, binaires)
-- Exfiltration via canaux couverts (DNS tunneling, steganographie)
-- Malware qui detecte l'environnement d'analyse (anti-sandbox)
-- Attaques multi-etapes avec payload distant
-- Obfuscation JS avancee non couverte par les heuristiques
+- Malicious code in non-JS/non-Python files (WASM, binaries)
+- Exfiltration via covert channels (DNS tunneling, steganography)
+- Malware that detects the analysis environment (anti-sandbox)
+- Multi-stage attacks with remote payload
+- Advanced JS obfuscation not covered by heuristics
 
-## Protections de securite internes
+## Internal Security Protections
 
-### Sanitization des inputs
-
-| Protection | Detail |
-|------------|--------|
-| YAML safe schema | Tous les appels `yaml.load()` utilisent `{ schema: yaml.JSON_SCHEMA }` pour bloquer les tags dangereux (`!!js/function`, `!!python/object`) |
-| Git ref sanitization | Les references git (tags, branches, commits) passees a `muaddib diff` sont validees contre l'injection de commande avant execution de `git checkout` |
-| CLI argument validation | Les arguments CLI de longueur excessive (>10000 chars), les paths unicode, et les tentatives d'injection shell (`$(...)`, backticks) sont neutralises |
-
-### Securite reseau
+### Input Sanitization
 
 | Protection | Detail |
 |------------|--------|
-| SSRF protection | Les redirections HTTP du fetcher IOC sont validees via `isAllowedFetchRedirect()` avec whitelist de domaines autorises et resolution des URLs relatives |
-| Webhook timeout | Les envois webhook (Discord/Slack) sont limites en temps pour eviter les blocages sur des endpoints lents ou malveillants |
-| Fail-closed sur registry | Si le registre npm est injoignable lors d'un `muaddib install`, l'installation echoue par defaut plutot que de continuer sans verification. `safe-install` bloque egalement si la base IOC est indisponible (design fail-closed) |
+| YAML safe schema | All `yaml.load()` calls use `{ schema: yaml.JSON_SCHEMA }` to block dangerous tags (`!!js/function`, `!!python/object`) |
+| Git ref sanitization | Git references passed to `muaddib diff` are validated against command injection before `git checkout` execution |
+| CLI argument validation | Excessive-length arguments (>10000 chars), unicode paths, and shell injection attempts (`$(...)`, backticks) are neutralized |
 
-### Securite des installations
+### Network Security
 
 | Protection | Detail |
 |------------|--------|
-| `--ignore-scripts` | Les `npm install` internes (sandbox, safe-install) utilisent le flag `--ignore-scripts` pour empecher l'execution de preinstall/postinstall malveillants |
-| Symlink protection | `lstatSync` est utilise pour detecter les liens symboliques et eviter les boucles infinies ou l'acces a des fichiers hors scope |
-| XSS dans rapports HTML | Les donnees utilisateur dans les rapports HTML sont echappees via `escapeHtml()` |
-| Docker sandbox | L'analyse sandbox valide le nom du package avant passage au container Docker |
+| SSRF protection | Centralized download in `src/shared/download.js`: registry domain allowlist, private IP blocking (127.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x, IPv6 loopback/link-local), redirect validation |
+| Webhook timeout | Webhook sends (Discord/Slack) are time-limited to prevent blocking on slow or malicious endpoints |
+| Webhook strict | Alerts only for IOC match, sandbox confirm, or canary exfiltration (no low-confidence heuristics) |
+| Fail-closed on registry | If npm registry is unreachable during `muaddib install`, installation fails by default |
 
-## Resultats des tests adversariaux
+### Installation Security
 
-### Taux de detection : 15/15 (100%)
+| Protection | Detail |
+|------------|--------|
+| `--ignore-scripts` | Internal `npm install` commands (sandbox, safe-install) use `--ignore-scripts` to prevent malicious preinstall/postinstall execution |
+| Symlink protection | `lstatSync` is used to detect symbolic links and prevent infinite loops or out-of-scope file access |
+| XSS in HTML reports | User data in HTML reports is escaped via `escapeHtml()` |
+| Docker sandbox | Package name validated via `sanitizePackageName()` before passing to Docker container |
+| Command injection prevention | `execFileSync` with array arguments instead of `execSync` with template literals for tar extraction |
+| Path traversal prevention | `sanitizePackageName()` removes `..` sequences from package names |
 
-15 scenarios de packages malveillants realistes ont ete crees et testes :
+## Adversarial Testing Results
 
-| # | Scenario | Technique | Detecte |
-|---|----------|-----------|---------|
-| 1 | `postinstall curl \| sh` | T1059.004 | Oui |
-| 2 | `preinstall` reverse shell | T1059.004 | Oui |
-| 3 | `child_process.exec` + base64 + eval | T1059 | Oui |
-| 4 | `readFileSync` credentials + fetch | T1552.001 | Oui |
-| 5 | `process.env.NPM_TOKEN` exfiltration | T1552.001 | Oui |
-| 6 | `eval()` avec concatenation dynamique | T1059 | Oui |
-| 7 | `Buffer.from` base64 + eval | T1027 | Oui |
-| 8 | `dns.lookup` exfiltration via env | T1041 | Oui |
-| 9 | Typosquatting lodahs/axois/expres | T1195.002 | Oui |
-| 10 | `.npmrc` read + HTTP POST | T1552.001 | Oui |
-| 11 | `~/.ssh/id_rsa` vol de cle SSH | T1552.001 | Oui |
-| 12 | Code obfusque `_0x` + hex escapes | T1027 | Oui |
-| 13 | Webhook suspect dans postinstall | T1105 | Oui |
-| 14 | Tampering package.json + vol credentials | T1195.002 | Oui |
-| 15 | Prototype pollution + eval | T1059 | Oui |
+### Detection rate: 103/107 (96.26% ADR, global threshold=20, v2.11.48)
 
-### Robustesse (56 fuzz tests)
+107 available adversarial/holdout evasive samples (67 adversarial + 40 holdout across 7 red team waves + 4 holdout batches) tested with real-world evasion techniques.
 
-Les parsers ont ete testes avec des inputs malformes :
-- **YAML** : invalide, `!!js/function` bloque, vide, 10MB, unicode, null bytes, billion laughs, nesting 100 niveaux
-- **JSON** : invalide, vide, cles 10000 chars, valeurs null, types incorrects, 10000 deps, prototype pollution
-- **AST** : syntaxe invalide, binaire en .js, vide, commentaires seuls, null bytes, BOM, 100 niveaux de callbacks
-- **CLI** : arguments 10000 chars, paths unicode, injection shell `$(...)`, flags conflictuels
+See [Evaluation Methodology](EVALUATION_METHODOLOGY.md) for pre-tuning and post-tuning score details.
 
-Resultat : **56/56 pass**. Aucun crash, aucune exception non rattrapee.
+### Robustness (56 fuzz tests)
 
-### 218 tests unitaires
+Parsers tested with malformed inputs:
+- **YAML**: invalid, `!!js/function` blocked, empty, 10MB, unicode, null bytes, billion laughs
+- **JSON**: invalid, empty, 10000-char keys, type mismatches, prototype pollution
+- **AST**: invalid syntax, binary as .js, empty, null bytes, BOM, 100 callback nesting levels
+- **CLI**: 10000-char arguments, unicode paths, shell injection `$(...)`, conflicting flags
 
-Couverture complete des scanners, parsers, IOC matching, typosquatting, et integrations CLI.
+Result: **56/56 pass**. No crashes, no uncaught exceptions.
 
-## Hypotheses
+### <!--stat:tests-->4545<!--/stat:tests--> unit and integration tests
 
-1. **Le code source est disponible** - MUAD'DIB analyse le code JS et les dependances Python, pas les binaires
-2. **Les IOCs sont a jour** - La detection depend de la base IOC
-3. **L'attaquant utilise des techniques connues** - Zero-days passent a travers
-4. **Le scan est execute avant l'installation** - Apres `npm install`, c'est trop tard si preinstall a execute
+Full coverage of scanners, parsers, IOC matching, typosquatting, CLI integrations, diff, temporal analysis, ground truth, canary tokens, and security (SSRF, injection). Tests grew from 3529 (v2.10.x) to <!--stat:tests-->4545<!--/stat:tests--> alongside the PYSRC/PYAST scanner additions, F1-F14 contextual FP caps, the Track D recon-exfil compound (v2.11.48), the v2.11.67-76 operational sprint (per-scan ledger, GHSA poller, coverage-audit, Phantom Gyp compound), and the v2.11.77-117 monitor-hardening + FPR-reduction sprint.
 
-## Architecture de detection
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      MUAD'DIB Scanner                        │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │  IOC Match  │  │  AST Parse  │  │  Pattern Matching   │  │
-│  │  (hashes,   │  │  (acorn)    │  │  (shell, scripts)   │  │
-│  │  packages)  │  │             │  │                     │  │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
-│         │                │                     │             │
-│         v                v                     v             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                   Dataflow Analysis                      ││
-│  │            (credential read -> network send)             ││
-│  └─────────────────────────────────────────────────────────┘│
-│         │                │                     │             │
-│         v                v                     v             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                  Python Scanner                           ││
-│  │  (requirements.txt, setup.py, pyproject.toml, PyPI IOC)  ││
-│  └─────────────────────────────────────────────────────────┘│
-│         │                │                     │             │
-│         v                v                     v             │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │                   Threat Enrichment                      ││
-│  │         (rules, MITRE ATT&CK, playbooks)                 ││
-│  └─────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
-```
+### Ground Truth Validation
 
-## Mapping MITRE ATT&CK
+**96 real-world supply-chain attacks** replayed automatically (94 active, 2 out-of-scope protestware). Detection rate (v2.11.48 full measurement): **95.74%** (90/94 active attacks, TPR@3) and **88.30%** (83/94, TPR@20 operational threshold, **+3.1pp vs v2.11.47** via Track D). 22 samples added 2026-05-25 (16 synthetic for PYSRC/PYAST/AST-092/AICONF-004/PKG-022 + 6 real-world npm tarballs from VPS archive + 7 reconstructions from `data/all-review-results.json`). 13 PyPI samples (was 0). Includes event-stream, ua-parser-js, coa, node-ipc, eslint-scope, flatmap-stream, solana-web3js, react-emits, TrapDoor build-scripts-utils + project-init-tools + async-pipeline-builder, defi-threat-scanner, @cseo-hr/trpweb-shared, marginfi cluster, byvendors, heloo131313, vite-json-config, and 80+ more.
 
-| Technique | ID | Detection MUAD'DIB |
+### Datadog 17K Benchmark
+
+Validated against 17,922 real npm malware samples. Wild TPR: **92.8%** (13,538/14,587 in-scope). 3,335 packages skipped (no JS files). By category: compromised_lib **97.8%** (904/924), malicious_intent **92.1%** (12,582/13,663 in-scope).
+
+## MITRE ATT&CK Mapping
+
+| Technique | ID | MUAD'DIB Detection |
 |-----------|----|--------------------|
 | Credentials in Files | T1552.001 | AST analysis |
+| Private Keys (.ssh/id_rsa) | T1552.004 | AST analysis |
 | Command and Scripting Interpreter | T1059 | Pattern matching |
-| Supply Chain Compromise (npm) | T1195.002 | IOC matching |
-| PyPI Supply Chain Compromise | T1195.002 | IOC matching |
-| PyPI Typosquatting | T1195.002 | Levenshtein + PEP 503 |
+| Unix Shell (reverse shell, netcat) | T1059.004 | Pattern matching |
+| JavaScript (eval, new Function) | T1059.007 | AST analysis |
+| Application Layer Protocol (DNS/HTTP) | T1071 | Sandbox dynamic analysis |
+| Supply Chain Compromise (npm/PyPI) | T1195.002 | IOC matching |
 | Obfuscated Files | T1027 | Heuristics |
 | Exfiltration Over C2 Channel | T1041 | Dataflow analysis |
-| Data Destruction | T1485 | Pattern matching |
 | Ingress Tool Transfer | T1105 | Pattern matching |
+| Data Destruction | T1485 | Pattern matching |
 
-## Recommandations
+See [SECURITY.md](../SECURITY.md#detection-rules) for the complete <!--stat:rulesTotal-->277<!--/stat:rulesTotal-->-rule reference.
 
-### Pour les utilisateurs
+## Assumptions
 
-1. Utiliser `muaddib install <pkg>` au lieu de `npm install` pour scanner avant installation
-2. Mettre a jour les IOCs regulierement (`muaddib update`)
-3. Utiliser le mode `--explain` pour comprendre les detections
-4. Integrer dans CI/CD avec sortie SARIF
-5. Configurer les pre-commit hooks (`muaddib init-hooks`) pour scanner a chaque commit
-6. Utiliser `muaddib diff` en CI pour ne bloquer que les nouvelles menaces
-
-### Pour les equipes securite
-
-1. Completer avec une analyse dynamique (`muaddib sandbox <pkg>`)
-2. Monitorer les nouveaux packages avant adoption
-3. Utiliser `--sarif` pour integration SIEM et GitHub Security
-4. Contribuer des IOCs via PR sur le repo
-5. Utiliser le mode `--paranoid` pour les projets critiques
+1. **Source code is available** — MUAD'DIB analyzes JS and Python dependencies, not binaries
+2. **IOCs are up to date** — Detection depends on the IOC database
+3. **Attacker uses known techniques** — Zero-days pass through
+4. **Scan runs before installation** — After `npm install`, it's too late if preinstall executed
 
 ## Contacts
 

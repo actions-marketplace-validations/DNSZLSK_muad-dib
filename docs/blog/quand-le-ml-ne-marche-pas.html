@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quand le ML ne marche pas : pourquoi j'ai remplacé un classifier par des règles déterministes - MUAD'DIB</title>
+  <meta name="description" content="AUC 0.999 sur corpus pollué vs AUC 0.9917 sur 302 packages reviewés. Pourquoi XGBoost n'arrive pas à exploiter des features sparses sur petit corpus, et le pivot vers un post-filtre déterministe en v2.10.97.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Quand le ML ne marche pas : pourquoi j'ai remplacé un classifier par des règles déterministes">
+  <meta property="og:description" content="AUC 0.999 sur corpus pollué vs AUC 0.9917 sur 302 packages reviewés. Pourquoi XGBoost n'arrive pas à exploiter des features sparses sur petit corpus, et le pivot vers un post-filtre déterministe en v2.10.97.">
+  <meta property="og:image" content="../img/og-default.png">
+  <meta property="og:site_name" content="MUAD'DIB">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="../img/og-default.png">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../vendor/github-dark.min.css">
+  <script src="../vendor/highlight.min.js"></script>
+  <script>hljs.highlightAll();</script>
+</head>
+<body>
+
+<nav>
+  <a href="../" class="site-name">muad-dib</a>
+  <a href="../">accueil</a>
+  <a href="./">blog</a>
+  <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">github</a>
+  <a href="https://www.npmjs.com/package/muaddib-scanner" target="_blank" rel="noopener">npm</a>
+</nav>
+
+<main>
+  <a href="./" class="back-link">&larr; Blog</a>
+
+  <article>
+    <div class="article-meta">
+      <h1>Quand le ML ne marche pas : pourquoi j'ai remplacé un classifier par des règles déterministes</h1>
+      <span class="date">2026-04-19</span>
+      <div class="tags">
+        <span class="tag">ml</span>
+        <span class="tag">retrospective</span>
+        <span class="tag">xgboost</span>
+        <span class="tag">post-filtre</span>
+        <span class="tag">méthodologie</span>
+      </div>
+    </div>
+
+    <div class="article-content">
+
+      <p>L'article du 5 avril annonçait FPR 11% à 2.85%, TPR 99.93%, AUC 0.999. Ces chiffres étaient faux. Pas inventés : mesurés sur un corpus de validation contenant 44 807 packages labellisés <code>clean</code> par le scanner lui-même, sans supervision externe. Le modèle apprenait à reproduire les décisions du scanner, pas à corriger ses faux positifs.</p>
+
+      <p><strong>Note méthodologique :</strong> MUAD'DIB est un projet où je définis la direction technique, les décisions architecturales et le scope. Le code est écrit par Claude Code sous supervision. Les reviews de packages sont faites par des agents Claude Code en parallèle sur VPS avec spot-check humain. Je valide les patterns, je décide des pivots, je mesure les résultats. Cette retrospective raconte une session de travail du 18-19 avril où un classifier ML a été remplacé par un post-filtre déterministe.</p>
+
+      <h2>Le diagnostic de contamination</h2>
+
+      <p>Le FPR production du scanner restait élevé après les fixes de v2.10.74 (P1-P4 FP cluster fixes basés sur l'audit forensique de 53 953 alertes). Les clusters faciles avaient été capturés. Les FP qui restaient en zone CRITICAL généraient des webhooks Discord P1 qui noyaient les vraies alertes. Avant d'ajouter encore des heuristiques au scanner, il fallait comprendre quels patterns produisaient ces FP résiduels.</p>
+
+      <p>La semaine du 10 au 18 avril, le moniteur a flaggé 2 146 packages avec un score &ge; 70. La review a été lancée sur le VPS : plusieurs agents Claude Code en parallèle, chacun ouvre les tarballs, lit le code, classe malware ou FP. Spot-check humain sur 20 packages tirés au hasard (17/20 FP confirmés, 3 reclassés en faveur du verdict d'agent). Première passe sur 1 481 packages, puis review étendue jusqu'à 2 146.</p>
+
+      <p>8 clusters de faux positifs ressortent :</p>
+
+      <ul>
+        <li><strong>Bundles minifiés</strong> sans script lifecycle (babylonjs, vue.runtime.global.prod.js, electron)</li>
+        <li><strong>Installers binaires depuis GitHub Releases</strong> (esbuild, swc, sharp, prebuild-install)</li>
+        <li><strong>Endpoints réseau dans le scope du package</strong> (@stripe/stripe-js qui fetch api.stripe.com)</li>
+        <li><strong>Git hooks écrits depuis source locale</strong> (husky, simple-git-hooks)</li>
+        <li><strong>Typosquats sur noms scoped</strong> (faux trigger Levenshtein sur @scope/foo vs @scope/foobar)</li>
+        <li><strong>Obfuscation commerciale</strong> (jscrambler, javascript-obfuscator) sans signal d'attaque</li>
+        <li><strong>Placeholders anti-dep-confusion</strong> (index.js qui fait <code>module.exports = {}</code>)</li>
+        <li><strong>Install scripts sans network egress</strong> (config loaders, build scripts)</li>
+      </ul>
+
+      <p>2 vrais malwares sont surfacés au passage (percy-cake-docker, renovate-config-doctolib). Ils étaient passés en zone P3 jaune sans déclencher d'alerte forte. Sans review systématique sur tous les flagged, ils restaient invisibles.</p>
+
+      <p>Sortie de la review : un corpus de 302 packages avec verdicts agents validés par spot-check, 198 FP + 104 malware. Dans le reste de l'article il est nommé "corpus humain" par opposition aux corpus auto-labellés par le scanner, pas parce qu'un humain aurait lu chacun des 302 packages.</p>
+
+      <h2>Les 8 features F1-F8 (v2.10.96)</h2>
+
+      <p>L'approche retenue : au lieu d'ajouter encore 8 heuristiques au scanner (qui finiraient par tirer aussi sur des malwares qui imitent ces patterns), construire 8 features contextuelles pour que le ML puisse les utiliser comme inputs. 8 features contextuelles sont implémentées dans <code>src/ml/feature-extractor.js</code>. Chaque feature est un boolean ciblant un cluster :</p>
+
+      <table>
+        <tr><th>ID</th><th>Feature</th><th>Cluster</th></tr>
+        <tr><td>F1</td><td><code>bundle_without_install_scripts</code></td><td>Bundles minifiés sans lifecycle</td></tr>
+        <tr><td>F2</td><td><code>install_url_github_releases</code></td><td>Binaires depuis GitHub Releases</td></tr>
+        <tr><td>F3</td><td><code>network_destination_first_party</code></td><td>Réseau dans le scope du package</td></tr>
+        <tr><td>F4</td><td><code>git_hook_source_local</code></td><td>Git hooks locaux</td></tr>
+        <tr><td>F5</td><td><code>typosquat_scoped_package</code></td><td>Faux trigger Levenshtein scoped</td></tr>
+        <tr><td>F6</td><td><code>obfuscation_without_vector</code></td><td>Obfuscation commerciale</td></tr>
+        <tr><td>F7</td><td><code>placeholder_anti_dep_confusion</code></td><td>Placeholder dependency confusion</td></tr>
+        <tr><td>F8</td><td><code>install_script_no_network_egress</code></td><td>Install sans egress réseau (DESACTIVEE)</td></tr>
+      </table>
+
+      <p>F8 est laissée inerte (<code>features.install_script_no_network_egress = 0</code>). La mesure sur le corpus malveillant montre qu'elle classifie 19 malwares comme FP : ils exfiltrent via <code>dangerous_exec</code> (curl/wget direct), pas via les types réseau Node.js trackés par <code>EGRESS_TYPES</code>. Si on l'active, le ML apprend "install_script_no_network_egress = benign" sur des malwares confirmés. Elle reste désactivée jusqu'à élargissement de <code>EGRESS_TYPES</code>.</p>
+
+      <p>Le reste de la PR est de la plomberie : <code>homepage</code> extrait de <code>npm-registry.js</code> (nécessaire pour F3), <code>threat.urls[]</code> ajouté dans <code>handle-post-walk.js</code>, <code>fileSizes</code> propagé jusqu'au build du record ML. Aucun changement de scoring : v2.10.96 produit les mêmes scores que v2.10.95 sur tous les packages.</p>
+
+      <h2>Le gate AUC qui ne passe pas</h2>
+
+      <p>Validation des features individuelles sur le corpus 302. AUC par feature :</p>
+
+      <table>
+        <tr><th>Feature</th><th>AUC</th><th>Note</th></tr>
+        <tr><td>F1 bundle_without_install_scripts</td><td>0.6061</td><td>Le moins pire</td></tr>
+        <tr><td>F2 install_url_github_releases</td><td>0.5202</td><td></td></tr>
+        <tr><td>F3 network_destination_first_party</td><td>0.5076</td><td></td></tr>
+        <tr><td>F4 git_hook_source_local</td><td>0.5051</td><td></td></tr>
+        <tr><td>F5 typosquat_scoped_package</td><td>0.5354</td><td></td></tr>
+        <tr><td>F6 obfuscation_without_vector</td><td>0.5152</td><td></td></tr>
+        <tr><td>F7 placeholder_anti_dep_confusion</td><td>0.5000</td><td>Jamais tirée sur le corpus</td></tr>
+        <tr><td>F8 install_script_no_network_egress</td><td>0.5913</td><td>Direction inversée (malware)</td></tr>
+      </table>
+
+      <p>Gate AUC FAIL : aucune feature n'atteint 0.70.</p>
+
+      <p>La matrice de confusion par feature montre autre chose : la précision est 100% sur F1 à F6. Quand elles fire, c'est un FP, jamais un malware. 0% de malware impacté, mesuré sur le corpus reviewé.</p>
+
+      <p>L'écart entre AUC ~0.55 et précision 100% vient des features binaires sparses. AUC mesure le ranking de l'ensemble du corpus. Une feature qui tire sur 35 packages sur 302 (cas de F1) a un AUC max théorique d'environ 0.61, même avec précision parfaite, parce que les 267 autres packages sont rankés au hasard. AUC est une mauvaise métrique pour un signal binaire qui ne s'applique qu'à un sous-ensemble. Précision conditionnelle est la bonne.</p>
+
+      <h2>Le retrain XGBoost à AUC 0.9998</h2>
+
+      <p>Première tentative de retrain pour activer un classifier ML. Inputs : 96 features (88 originales + 8 nouvelles F1-F8). Le corpus d'entraînement combine les 302 labels reviewés et <code>ml-training-merged.jsonl</code> qui contient 44 807 records labellisés <code>clean</code> automatiquement par le moniteur.</p>
+
+      <table>
+        <tr><th>Métrique</th><th>Valeur</th></tr>
+        <tr><td>AUC holdout</td><td>0.9998</td></tr>
+        <tr><td>TPR @ 1% FPR</td><td>1.0</td></tr>
+        <tr><td>Precision</td><td>1.0</td></tr>
+        <tr><td>Recall</td><td>1.0</td></tr>
+      </table>
+
+      <p>Quand un modèle atteint precision 1.0 et recall 1.0 sur du data réel, c'est presque toujours du data leakage. Diagnostic : le modèle n'apprend pas à distinguer FP de malware. Il apprend à distinguer "scanné <code>clean</code> par le scanner" (44 807 labels auto) de "malware connu". Le signal vient des labels auto pollués.</p>
+
+      <p>C'est la même erreur que celle documentée dans <a href="ml-audit-fondamental.html">l'article du 22 mars</a>, sous une variante : cette fois le pipeline n'utilisait pas directement les labels <code>fp</code>, il utilisait les labels <code>clean</code> du scanner. Règle violée : <code>ml-training*.jsonl</code> est un fichier de dédup référentiel, jamais une source de labels. Le retrain est rejeté. La règle est notée dans le repo, pour ne pas la re-perdre au prochain cycle.</p>
+
+      <h2>Le retrain propre sur 302 labels reviewés</h2>
+
+      <p>Deuxième tentative. Corpus reviewé uniquement (les 302 packages décrits en section 1) : 198 FP + 104 malware. Stratification 80/20, holdout 60 packages, 5-fold cross validation.</p>
+
+      <table>
+        <tr><th>Métrique</th><th>Valeur</th></tr>
+        <tr><td>AUC holdout</td><td>0.9917</td></tr>
+        <tr><td>5-fold CV</td><td>0.9888 &plusmn; 0.0041</td></tr>
+        <tr><td>TPR @ 1% FPR</td><td>0.6667</td></tr>
+        <tr><td>TPR @ 5% FPR</td><td>1.0</td></tr>
+        <tr><td>Precision (holdout)</td><td>0.9130 (21 TP, 2 FP)</td></tr>
+        <tr><td>Recall (holdout)</td><td>1.0 sur 3 malwares</td></tr>
+      </table>
+
+      <p>Écart AUC holdout vs CV inférieur à 0.003. Pas d'overfitting au sens classique sur ce corpus. F1 (<code>bundle_without_install_scripts</code>) arrive en rang 3 du feature importance avec 0.1149. Les autres features F2-F8 ont une importance proche de zéro.</p>
+
+      <h2>Les 8 features ciblées ont importance 0 dans XGBoost</h2>
+
+      <p>Top 5 features du modèle retrainé :</p>
+
+      <ol>
+        <li><code>file_count_total</code></li>
+        <li><code>count_low</code></li>
+        <li><code>dep_count</code></li>
+        <li><code>type_dangerous_exec</code></li>
+        <li><code>type_crypto_decipher</code></li>
+      </ol>
+
+      <p>Les 8 features qu'on avait ciblées sur les clusters FP : importance 0 ou proche. Précision 100% sur leur sous-ensemble, importance 0 dans le modèle. Comportement contre-intuitif au premier abord, classique en relecture.</p>
+
+      <p>Sur 302 samples, XGBoost préfère splitter sur des features continues qui partitionnent 100% du corpus (<code>file_count_total</code> divise 302 en 2 groupes équilibrés à chaque split) plutôt que sur des features binaires sparses qui ne discriminent que sur 14% du corpus (F1 ne tire que sur 42 packages). Le gain d'information par split est plus grand sur les continues, même si le gain final sur les FP est plus petit. Pour que des features sparses émergent, il faut beaucoup plus de données. Estimation : 2 000+ samples avec une meilleure couverture par cluster.</p>
+
+      <h2>Le pivot vers post-filtre déterministe (v2.10.97)</h2>
+
+      <p>Les 7 features actives ont précision 100% sur leur sous-ensemble. Ce n'est pas un signal probabiliste qu'un classifier doit pondérer. C'est un signal déterministe. J'ai décidé de pivoter vers un post-filtre de règles, plus approprié pour ce type de signal.</p>
+
+      <p>L'implémentation : <code>applyContextualFPCaps()</code> dans <code>src/scoring.js</code>. Sept caps déterministes branchés sur les helpers de <code>feature-extractor.js</code>. Appliqué APRES <code>calculateRiskScore</code>, donc les compound boosts et les lifecycle floors ont déjà eu le dernier mot.</p>
+
+      <table>
+        <tr><th>Code</th><th>Cap</th><th>Justification</th></tr>
+        <tr><td>F1</td><td>30</td><td>Bundle minifié sans lifecycle = bibliothèque, pas un dropper</td></tr>
+        <tr><td>F2</td><td>35</td><td>Installer binaire depuis GitHub Releases = pattern légitime</td></tr>
+        <tr><td>F3</td><td>30</td><td>Endpoint réseau dans le scope du package</td></tr>
+        <tr><td>F4</td><td>35</td><td>Git hooks écrits depuis source locale</td></tr>
+        <tr><td>F5</td><td>--</td><td>Soustrait les points typosquat (pas un cap)</td></tr>
+        <tr><td>F6</td><td>35</td><td>Obfuscation commerciale sans vecteur d'attaque</td></tr>
+        <tr><td>F7</td><td>20</td><td>Placeholder anti-dep-confusion</td></tr>
+      </table>
+
+      <p>Quand plusieurs caps s'appliquent, le <code>Math.min()</code> gagne (cap le plus serré). F5 est traité séparément : il soustrait les points typosquat au score au lieu de plafonner.</p>
+
+      <h2>Les résultats mesurés</h2>
+
+      <p>Validation sur le corpus reviewé de 302 packages (198 FP + 104 malware). Comparaison v2.10.96 (sans post-filtre) vs v2.10.97 (avec post-filtre).</p>
+
+      <table>
+        <tr><th>Métrique</th><th>Valeur</th></tr>
+        <tr><td>FP cappés (sur 198)</td><td><strong>67 (33.8%)</strong></td></tr>
+        <tr><td>Malware impactés (sur 104)</td><td><strong>0</strong></td></tr>
+        <tr><td>FP CRITICAL avant</td><td>165</td></tr>
+        <tr><td>FP CRITICAL après</td><td>116 (-49)</td></tr>
+      </table>
+
+      <p>Ventilation par feature :</p>
+
+      <table>
+        <tr><th>Feature</th><th>Packages cappés</th></tr>
+        <tr><td>F1 bundle_without_install_scripts</td><td>35</td></tr>
+        <tr><td>F5 typosquat_scoped_package</td><td>13</td></tr>
+        <tr><td>F2 install_url_github_releases</td><td>9</td></tr>
+        <tr><td>F6 obfuscation_without_vector</td><td>7</td></tr>
+        <tr><td>F4 git_hook_source_local</td><td>2</td></tr>
+        <tr><td>F3 network_destination_first_party</td><td>1</td></tr>
+        <tr><td>Total</td><td><strong>67</strong></td></tr>
+      </table>
+
+      <p>49 webhooks Discord P1 évités sur la semaine de validation. Les 131 FP CRITICAL restants ne matchent aucun des 7 clusters. Pour les attaquer, il faut chercher ailleurs : probablement la dédup compound scoring de <code>src/scoring.js</code>, où certaines combinaisons de threats CRITICAL se renforcent mutuellement sans bénéfice de détection. Roadmap v2.10.98+.</p>
+
+      <h2>Limites mesurables de cette retrospective</h2>
+
+      <p>Le holdout du retrain XGBoost contient 60 packages dont 3 malwares. TPR@1%FPR = 2/3 sur 3 samples, c'est du bruit statistique. Les chiffres de la table "retrain propre" sont indicatifs, pas robustes.</p>
+
+      <p>Le ML shadow en prod n'est pas le modèle retrainé ici. C'est l'ancien modèle de mars avec les problèmes documentés. Le retrain n'a pas été activé en production parce qu'on a pivoté vers le post-filtre déterministe avant.</p>
+
+      <p>Le post-filtre F1-F7 a été validé sur les mêmes 302 packages qui ont servi à identifier les clusters. Biais de circularité : on mesure 33.8% de FP cappés sur un corpus dont les FP ont été utilisés pour définir les features. Une vraie validation demande un nouveau corpus reviewé sans overlap.</p>
+
+      <p>Les 198 FP du corpus ont été identifiés à partir des packages flaggés à score &ge; 70 sur une semaine donnée. Ils ne couvrent pas la distribution complète des FP du scanner. D'autres clusters peuvent exister à des scores plus bas et ne sont pas capturés par F1-F7.</p>
+
+      <h2>Leçon</h2>
+
+      <p>AUC 0.999 sur petit dataset avec sources mixtes signale presque toujours du data leakage. Le 0.999 d'avril venait du modèle apprenant à reconnaître la source des labels, pas le contenu des packages. Les labels auto du scanner (<code>clean</code> ou <code>fp</code>) ne peuvent pas servir de ground truth pour entraîner ce même scanner. C'était la leçon de mars, redécouverte en avril sous une variante.</p>
+
+      <p>XGBoost sur petit corpus n'exploite pas les features binaires sparses : le modèle préfère splitter sur des continues, même si le gain final est plus petit. Une feature à précision 100% sur son sous-ensemble est un signal déterministe. Un post-filtre de règles le traite mieux qu'un classifier sur ce volume de données.</p>
+
+      <p>Sur ce corpus et à ce stade du projet, un post-filtre déterministe fonctionne mieux qu'un ML qu'on ne peut pas entraîner correctement. Ça ne veut pas dire que le ML est une mauvaise idée en général. Ça veut dire qu'il faut plus de données labellisées avant d'y revenir.</p>
+
+      <h2>Ce qui reste</h2>
+
+      <p>Le ML shadow tourne toujours sur le moniteur, mais le retrain n'est pas activé. Le post-filtre F1-F7 est en prod depuis v2.10.97. F8 sera réactivée après élargissement de <code>EGRESS_TYPES</code> (ajouter <code>dangerous_exec</code>, <code>lifecycle_dangerous_exec</code>, <code>node_inline_exec</code>, <code>child_process</code>).</p>
+
+      <p>Le retrain ML est reporté à quand le corpus reviewé atteindra 2 000+ labels. Rythme : 150-200 packages par session d'agents sur le VPS, plus le spot-check humain. 5 à 10 sessions pour atteindre la masse critique.</p>
+
+    </div>
+  </article>
+</main>
+
+<footer>
+  MUAD'DIB / DNSZLSK / <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">source</a>
+</footer>
+
+</body>
+</html>

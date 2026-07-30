@@ -1,0 +1,172 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { MAX_TAINT_DEPTH } = require('./constants.js');
+const { safeParse } = require('../../shared/constants.js');
+
+// =============================================================================
+// Shared helpers
+// =============================================================================
+
+function parseFile(filePath) {
+  let content;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+  return safeParse(content, { allowReturnOutsideFunction: true, allowImportExportEverywhere: true });
+}
+
+function walkAST(node, visitor, depth) {
+  if (depth === undefined) depth = 0;
+  if (depth > MAX_TAINT_DEPTH) return;
+  if (!node || typeof node !== 'object') return;
+  if (node.type) visitor(node);
+  for (const key of Object.keys(node)) {
+    if (key === 'type') continue;
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        if (item && typeof item === 'object' && item.type) walkAST(item, visitor, depth + 1);
+      }
+    } else if (child && typeof child === 'object' && child.type) {
+      walkAST(child, visitor, depth + 1);
+    }
+  }
+}
+
+function isRequireCall(node) {
+  return (
+    node && node.type === 'CallExpression' &&
+    node.callee && node.callee.type === 'Identifier' &&
+    node.callee.name === 'require' &&
+    node.arguments.length === 1 &&
+    node.arguments[0].type === 'Literal' &&
+    typeof node.arguments[0].value === 'string'
+  );
+}
+
+function isLocalImport(spec) {
+  return spec.startsWith('./') || spec.startsWith('../');
+}
+
+function isModuleExportsAssign(node) {
+  if (node.type !== 'ExpressionStatement') return false;
+  const expr = node.expression;
+  if (expr.type !== 'AssignmentExpression' || expr.operator !== '=') return false;
+  const left = expr.left;
+  // module.exports = ...
+  if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && left.object.name === 'module' &&
+      left.property.name === 'exports') return true;
+  // module.exports.foo = ...
+  if (left.type === 'MemberExpression' && left.object.type === 'MemberExpression' &&
+      left.object.object.type === 'Identifier' && left.object.object.name === 'module' &&
+      left.object.property.name === 'exports') return true;
+  // exports.foo = ...
+  if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && left.object.name === 'exports') return true;
+  return false;
+}
+
+function getExportName(left) {
+  // module.exports = ... → 'default'
+  if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && left.object.name === 'module') {
+    if (left.property.name === 'exports') return 'default';
+  }
+  // module.exports.foo = ... → 'foo'
+  if (left.type === 'MemberExpression' && left.object.type === 'MemberExpression') {
+    return left.property.name || left.property.value || 'default';
+  }
+  // exports.foo = ... → 'foo'
+  if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && left.object.name === 'exports') {
+    return left.property.name || left.property.value || 'default';
+  }
+  return 'default';
+}
+
+function getFunctionBody(node) {
+  if (!node) return null;
+  if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+    if (node.body.type === 'BlockStatement') return node.body.body;
+    // Arrow with expression body: () => expr
+    return [{ type: 'ReturnStatement', argument: node.body }];
+  }
+  return null;
+}
+
+function getMemberChain(node, depth) {
+  if (depth === undefined) depth = 0;
+  if (depth > MAX_TAINT_DEPTH) return '';
+  if (node.type === 'Identifier') return node.name;
+  if (node.type === 'MemberExpression') {
+    const obj = getMemberChain(node.object, depth + 1);
+    const prop = node.property.name || node.property.value || '';
+    return `${obj}.${prop}`;
+  }
+  return '';
+}
+
+// Root identifier of a call's receiver, e.g. `process` for (process.stdout).write(),
+// `process` for process.send(), `console` for console.error(), `sender` for sender.send().
+// Returns null when the receiver root is not a plain Identifier (e.g. this.x.write(),
+// foo().bar()). Used to reject local-IO/IPC receivers (process/console) from the
+// write/send/connect instance-method sink set, which matches by method name alone.
+function getReceiverRootName(callee) {
+  if (!callee || callee.type !== 'MemberExpression') return null;
+  let obj = callee.object;
+  while (obj && obj.type === 'MemberExpression') obj = obj.object;
+  return obj && obj.type === 'Identifier' ? obj.name : null;
+}
+
+function extractLiteralArg(args) {
+  if (!args || args.length === 0) return '';
+  const first = args[0];
+  if (first.type === 'Literal' && typeof first.value === 'string') return first.value;
+  if (first.type === 'TemplateLiteral' && first.quasis.length === 1) return first.quasis[0].value.raw;
+  return '';
+}
+
+function resolveLocal(fileDir, spec, packagePath) {
+  const abs = path.resolve(fileDir, spec);
+  if (isFileExists(abs)) return toRel(abs, packagePath);
+  if (isFileExists(abs + '.js')) return toRel(abs + '.js', packagePath);
+  if (isFileExists(abs + '.mjs')) return toRel(abs + '.mjs', packagePath);
+  if (isFileExists(abs + '.cjs')) return toRel(abs + '.cjs', packagePath);
+  if (isFileExists(path.join(abs, 'index.js'))) return toRel(path.join(abs, 'index.js'), packagePath);
+  return null;
+}
+
+function isFileExists(p) {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
+function toRel(abs, packagePath) {
+  return path.relative(packagePath, abs).replace(/\\/g, '/');
+}
+
+
+module.exports = {
+  parseFile, walkAST, isRequireCall, isLocalImport, isModuleExportsAssign,
+  getExportName, getFunctionBody, getMemberChain, getReceiverRootName, extractLiteralArg,
+  resolveLocal, isFileExists, toRel
+};

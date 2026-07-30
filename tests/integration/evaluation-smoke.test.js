@@ -1,0 +1,81 @@
+const { test, assert } = require('../test-utils');
+
+async function runEvaluationSmokeTests() {
+  console.log('\n=== EVALUATION SMOKE TESTS ===\n');
+
+  const {
+    ADR_THRESHOLD,
+    GT_THRESHOLD,
+    BENIGN_THRESHOLD,
+    ADVERSARIAL_SAMPLES,
+    HOLDOUT_SAMPLES,
+  } = require('../../src/commands/evaluate.js');
+
+  test('EVAL-SMOKE: ADR_THRESHOLD is a positive number', () => {
+    assert(typeof ADR_THRESHOLD === 'number', 'ADR_THRESHOLD should be a number');
+    assert(ADR_THRESHOLD > 0, 'ADR_THRESHOLD should be > 0');
+  });
+
+  test('EVAL-SMOKE: GT_THRESHOLD is a positive number', () => {
+    assert(typeof GT_THRESHOLD === 'number', 'GT_THRESHOLD should be a number');
+    assert(GT_THRESHOLD > 0, 'GT_THRESHOLD should be > 0');
+  });
+
+  test('EVAL-SMOKE: BENIGN_THRESHOLD is a positive number', () => {
+    assert(typeof BENIGN_THRESHOLD === 'number', 'BENIGN_THRESHOLD should be a number');
+    assert(BENIGN_THRESHOLD > 0, 'BENIGN_THRESHOLD should be > 0');
+  });
+
+  test('EVAL-SMOKE: BENIGN_THRESHOLD and ADR_THRESHOLD are aligned', () => {
+    assert(ADR_THRESHOLD === BENIGN_THRESHOLD,
+      `ADR_THRESHOLD (${ADR_THRESHOLD}) should equal BENIGN_THRESHOLD (${BENIGN_THRESHOLD})`);
+  });
+
+  test('EVAL-SMOKE: Sample lists are arrays (no per-sample thresholds)', () => {
+    assert(Array.isArray(ADVERSARIAL_SAMPLES), 'ADVERSARIAL_SAMPLES should be an array');
+    assert(Array.isArray(HOLDOUT_SAMPLES), 'HOLDOUT_SAMPLES should be an array');
+  });
+
+  test('EVAL-SMOKE: Sample lists have no duplicates', () => {
+    // A duplicate in either list silently inflates the ADR/holdout denominator,
+    // biasing the metric. Assert BOTH lists are duplicate-free (the old test built
+    // advSet but never checked it — and the "fn-return-eval appears twice" note was
+    // stale: ADVERSARIAL_SAMPLES currently has zero duplicates).
+    const advSet = new Set(ADVERSARIAL_SAMPLES);
+    const holdSet = new Set(HOLDOUT_SAMPLES);
+    assert(advSet.size === ADVERSARIAL_SAMPLES.length,
+      `ADVERSARIAL_SAMPLES has duplicates: ${ADVERSARIAL_SAMPLES.length} entries, ${advSet.size} unique`);
+    assert(holdSet.size === HOLDOUT_SAMPLES.length,
+      `HOLDOUT_SAMPLES has duplicates: ${HOLDOUT_SAMPLES.length} entries, ${holdSet.size} unique`);
+  });
+
+  test('EVAL-SMOKE: Scoring weights are consistent between monitor and scoring', () => {
+    const { SEVERITY_WEIGHTS } = require('../../src/scoring.js');
+    const { computeRiskScore } = require('../../src/monitor.js');
+
+    // Verify monitor uses same weights as scoring.js
+    const oneOfEach = computeRiskScore({ critical: 1, high: 1, medium: 1, low: 1 });
+    const expected = SEVERITY_WEIGHTS.CRITICAL + SEVERITY_WEIGHTS.HIGH + SEVERITY_WEIGHTS.MEDIUM + SEVERITY_WEIGHTS.LOW;
+    assert(oneOfEach === expected,
+      `Monitor score (${oneOfEach}) should match scoring.js weights sum (${expected})`);
+  });
+
+  // --- Scan result cache tests (P3) ---
+  const { computeSrcFingerprint } = require('../../src/commands/evaluate.js');
+
+  test('EVAL-SMOKE: computeSrcFingerprint returns stable string', () => {
+    const fp1 = computeSrcFingerprint();
+    const fp2 = computeSrcFingerprint();
+    assert(typeof fp1 === 'string', 'fingerprint should be a string');
+    assert(fp1.length > 0, 'fingerprint should not be empty');
+    assert(fp1 === fp2, 'fingerprint should be deterministic');
+  });
+
+  test('EVAL-SMOKE: scan result cache exports exist', () => {
+    const { loadScanCache, saveScanCache } = require('../../src/commands/evaluate.js');
+    assert(typeof loadScanCache === 'function', 'loadScanCache should be a function');
+    assert(typeof saveScanCache === 'function', 'saveScanCache should be a function');
+  });
+}
+
+module.exports = { runEvaluationSmokeTests };

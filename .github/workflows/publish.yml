@@ -1,0 +1,59 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@54045abd5dcd3b0fee9ca02fa24c57545834c9cc # v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - name: Verify no tarball contamination
+        run: |
+          # Guard 1: package/ directory must not exist (npm pack residue overwrites package.json in tarball)
+          if [ -d "package" ]; then
+            echo "::error::package/ directory found — this overwrites package.json in the published tarball. Remove it."
+            exit 1
+          fi
+          # Guard 2: no typosquat candidates in dependencies — uses muaddib's own
+          # typosquat detector (findTyposquatMatch) against ~100 popular packages.
+          # Catches loadash/chlk/expresss/requestt/etc, not just hardcoded names.
+          node scripts/check-deps-typosquats.js
+      - run: npm ci
+      - name: Verify dep provenance attestations (SLSA gate)
+        run: npm audit signatures
+      - name: Verify no HIGH/CRITICAL CVE in dependencies (F2 — defense-in-depth at release)
+        # Same gate as the PR CI. Release path, so fail-closed on a sustained outage is even
+        # more justified. Passes today (lone vuln is moderate, below the threshold).
+        timeout-minutes: 5
+        run: npm audit --audit-level=high
+      - run: npm test
+      - name: Validate tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+      - name: Self-scan node_modules (forensic record, non-blocking)
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: node bin/muaddib.js scan node_modules --json > "self-scan-${REF_NAME}.json" || true
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

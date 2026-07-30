@@ -1,57 +1,150 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const fs = require('fs');
 const path = require('path');
-const { findFiles } = require('../utils.js');
+const { findFiles, forEachSafeFile, debugLog } = require('../utils.js');
+const { getMaxFileSize } = require('../shared/constants.js');
 
 const SHELL_EXCLUDED_DIRS = ['node_modules', '.git', '.muaddib-cache'];
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const MALICIOUS_PATTERNS = [
-  { pattern: /curl.*\|.*sh/m, name: 'curl_pipe_shell', severity: 'HIGH' },
-  { pattern: /wget.*&&.*chmod.*\+x/m, name: 'wget_chmod_exec', severity: 'HIGH' },
-  { pattern: /bash\s+-i\s+>&\s+\/dev\/tcp/m, name: 'reverse_shell', severity: 'CRITICAL' },
+  { pattern: /curl[^\n]{0,5000}\|[^\n]{0,5000}sh/m, name: 'curl_pipe_shell', severity: 'HIGH' },
+  { pattern: /wget[^\n]{0,5000}&&[^\n]{0,5000}chmod[^\n]{0,5000}\+x/m, name: 'wget_chmod_exec', severity: 'HIGH' },
+  { pattern: /(?:ba)?sh\s+-i\s+>&\s*\/dev\/tcp/m, name: 'reverse_shell', severity: 'CRITICAL' },
   { pattern: /nc\s+-e\s+\/bin\/(ba)?sh/m, name: 'netcat_shell', severity: 'CRITICAL' },
   { pattern: /rm\s+-rf\s+(~\/|\$HOME|\/home)/m, name: 'home_deletion', severity: 'CRITICAL' },
   { pattern: /shred.*\$HOME/m, name: 'shred_home', severity: 'CRITICAL' },
-  { pattern: /curl.*-X\s*POST.*-d/m, name: 'curl_exfiltration', severity: 'HIGH' },
-  { pattern: /\.npmrc/m, name: 'npmrc_access', severity: 'HIGH' },
-  { pattern: /\.ssh/m, name: 'ssh_access', severity: 'HIGH' },
+  { pattern: /curl[^\n]{0,5000}-X\s*POST[^\n]{0,5000}-d/m, name: 'curl_exfiltration', severity: 'HIGH' },
+  { pattern: /(?:cat|readFile|cp|mv|curl\s+file:\/\/|tar\s+[^\n]{0,5000}|scp\s+)[^\n]{0,5000}\.npmrc/m, name: 'npmrc_access', severity: 'HIGH' },
+  { pattern: /(?:cat|readFile|cp|mv|curl\s+file:\/\/|tar\s+[^\n]{0,5000}|scp\s+)[^\n]{0,5000}\.ssh/m, name: 'ssh_access', severity: 'HIGH' },
   { pattern: /python\s+-c.*import\s+socket/m, name: 'python_reverse_shell', severity: 'CRITICAL' },
   { pattern: /perl\s+-e.*socket/m, name: 'perl_reverse_shell', severity: 'CRITICAL' },
-  { pattern: /mkfifo.*\/dev\/tcp/m, name: 'fifo_reverse_shell', severity: 'CRITICAL' }
+  { pattern: /mkfifo.*\/dev\/tcp/m, name: 'fifo_reverse_shell', severity: 'CRITICAL' },
+  { pattern: /mkfifo\s+\S+.*(?:\|\s*nc\s|nc\s+\S+.*>\s*\/tmp\/)/m, name: 'fifo_nc_reverse_shell', severity: 'CRITICAL' },
+  { pattern: /base64\s+-d\b.*\|\s*(ba)?sh/m, name: 'base64_decode_exec', severity: 'CRITICAL' },
+  { pattern: /wget\s+\S+.*&&.*base64\s+-d/m, name: 'wget_base64_decode', severity: 'HIGH' },
+  // IFS evasion patterns (v2.6.9)
+  { pattern: /curl\$\{?IFS\}?.*\|.*sh/m, name: 'curl_ifs_evasion', severity: 'CRITICAL' },
+  { pattern: /eval\s+.*\$\(curl/m, name: 'eval_curl_subshell', severity: 'CRITICAL' },
+  { pattern: /sh\s+-c\s+['"].*curl/m, name: 'sh_c_curl_exec', severity: 'HIGH' },
+  // Bun runtime evasion (v2.8.9 — Shai-Hulud 2.0)
+  { pattern: /\bbun\s+run\b/m, name: 'bun_runtime_evasion', severity: 'HIGH' },
+  // Python time.sleep sandbox evasion (v2.10.7 — CanisterWorm T1497.003)
+  { pattern: /python[23]?\s+-c\s*['"].*time\.sleep\s*\(\s*[1-9]\d{2,}/m, name: 'python_time_delay_exec', severity: 'HIGH' },
+  // v2.10.11 — CanisterWorm/TeamPCP patterns (T1543.002, T1485)
+  // Root filesystem wipe (kamikaze.sh wiper — broader than home_deletion)
+  { pattern: /rm\s+-rf\s+\/\s*(--no-preserve-root|\s|$|;|\|)/m, name: 'root_filesystem_wipe', severity: 'CRITICAL' },
+  // systemd persistence (pgmon.service, sysmon.service — CanisterWorm/TeamPCP T1543.002)
+  { pattern: /systemctl\s+(?:--\S+\s+)*(enable|start|daemon-reload)\b/m, name: 'systemd_persistence', severity: 'CRITICAL' },
+  // /proc/mem scanning for runner secret extraction (Trivy credential stealer)
+  { pattern: /\/proc\/\S*\/mem\b/m, name: 'proc_mem_scan', severity: 'CRITICAL' }
 ];
+
+const SHEBANG_RE = /^#!.*\b(?:ba)?sh\b/;
+
+// Source files (.js/.ts/...) can embed shell reverse-shell commands inside
+// child_process exec/execSync/spawn string args. shell.js historically scanned only
+// .sh/shebang files, so `execSync("bash -i >& /dev/tcp/...")` in index.js was invisible
+// (missed npx-whoami-demo, 2026-06 — a revshell that scored grs 25 with type_reverse_shell=0).
+// Apply ONLY the unambiguous reverse-shell command patterns to source files — NOT the
+// context-dependent ones (curl|sh, systemctl, rm -rf, base64|sh) which would false-positive
+// on JS string literals / build tooling. FPR-gate (2026-06-19): these 4 matched 0 port-check
+// idioms (</dev/tcp, echo >/dev/tcp, nc -z) and 0 node_modules .js files.
+const SOURCE_SCAN_PATTERN_NAMES = new Set([
+  'reverse_shell', 'netcat_shell', 'fifo_reverse_shell', 'fifo_nc_reverse_shell'
+]);
+const SOURCE_SCAN_EXTENSIONS = ['.js', '.cjs', '.mjs', '.ts', '.jsx', '.tsx'];
+
+function scanFileContent(file, content, targetPath, threats, patterns = MALICIOUS_PATTERNS) {
+  // Strip comment lines to avoid false positives on documentation
+  const activeContent = content.split(/\r?\n/)
+    .filter(line => !line.trimStart().startsWith('#'))
+    .join('\n');
+
+  for (const { pattern, name, severity } of patterns) {
+    if (pattern.test(activeContent)) {
+      threats.push({
+        type: name,
+        severity: severity,
+        message: `Pattern malveillant "${name}" detecte.`,
+        file: path.relative(targetPath, file)
+      });
+    }
+  }
+}
+
+/**
+ * Find extensionless files in a directory (non-recursive into excluded dirs).
+ * Used for shebang-based shell script detection.
+ */
+function findExtensionlessFiles(dir, excludedDirs, results = [], depth = 0) {
+  if (depth > 20) return results;
+  let items;
+  try { items = fs.readdirSync(dir); } catch (e) { debugLog('[SHELL] readdirSync error:', e?.message); return results; }
+
+  for (const item of items) {
+    if (excludedDirs.includes(item)) continue;
+    const fullPath = path.join(dir, item);
+    try {
+      const lstat = fs.lstatSync(fullPath);
+      if (lstat.isSymbolicLink()) continue;
+      if (lstat.isDirectory()) {
+        findExtensionlessFiles(fullPath, excludedDirs, results, depth + 1);
+      } else if (lstat.isFile() && !path.extname(item) && lstat.size <= getMaxFileSize()) {
+        results.push(fullPath);
+      }
+    } catch (e) { debugLog('[SHELL] stat error:', e?.message); }
+  }
+  return results;
+}
 
 async function scanShellScripts(targetPath) {
   const threats = [];
-  
-  // Cherche les fichiers shell
+
+  // Pass 1: files with shell extensions
   const files = findFiles(targetPath, { extensions: ['.sh', '.bash', '.zsh', '.command'], excludedDirs: SHELL_EXCLUDED_DIRS });
 
-  for (const file of files) {
-    let content;
-    try {
-      const stat = fs.statSync(file);
-      if (stat.size > MAX_FILE_SIZE) continue;
-      content = fs.readFileSync(file, 'utf8');
-    } catch {
-      continue; // Skip unreadable files
-    }
-    
-    // Strip comment lines to avoid false positives on documentation
-    const activeContent = content.split('\n')
-      .filter(line => !line.trimStart().startsWith('#'))
-      .join('\n');
+  forEachSafeFile(files, (file, content) => {
+    scanFileContent(file, content, targetPath, threats);
+  });
 
-    for (const { pattern, name, severity } of MALICIOUS_PATTERNS) {
-      if (pattern.test(activeContent)) {
-        threats.push({
-          type: name,
-          severity: severity,
-          message: `Pattern malveillant "${name}" detecte.`,
-          file: path.relative(targetPath, file)
-        });
+  // Pass 2: extensionless files with sh/bash shebang
+  const extensionless = findExtensionlessFiles(targetPath, SHELL_EXCLUDED_DIRS);
+
+  for (const file of extensionless) {
+    try {
+      const content = fs.readFileSync(file, 'utf8');
+      const firstLine = content.split(/\r?\n/, 1)[0];
+      if (SHEBANG_RE.test(firstLine)) {
+        scanFileContent(file, content, targetPath, threats);
       }
-    }
+    } catch (e) { debugLog('[SHELL] readFile error:', e?.message); }
   }
+
+  // Pass 3: source files (.js/.ts/...) — only the unambiguous reverse-shell command
+  // patterns (revshell commands embedded in child_process exec/spawn string args).
+  const sourcePatterns = MALICIOUS_PATTERNS.filter(p => SOURCE_SCAN_PATTERN_NAMES.has(p.name));
+  const sourceFiles = findFiles(targetPath, { extensions: SOURCE_SCAN_EXTENSIONS, excludedDirs: SHELL_EXCLUDED_DIRS });
+  forEachSafeFile(sourceFiles, (file, content) => {
+    scanFileContent(file, content, targetPath, threats, sourcePatterns);
+  });
 
   return threats;
 }

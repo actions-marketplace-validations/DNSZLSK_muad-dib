@@ -1,0 +1,1716 @@
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { test, asyncTest, assert, assertIncludes, assertNotIncludes, runScan, runScanDirect, addSkipped, TESTS_DIR } = require('../test-utils');
+
+async function runUpdaterTests() {
+
+// ============================================
+// UPDATE TESTS
+// ============================================
+
+console.log('\n=== UPDATE TESTS ===\n');
+
+test('UPDATE: Module loads and loadCachedIOCs works', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  assert(iocs.packagesMap instanceof Map, 'Should return packagesMap');
+  assert(iocs.wildcardPackages instanceof Set, 'Should return wildcardPackages');
+  assert(iocs.packages.length > 0, 'Should have packages');
+});
+
+test('UPDATE: updateIOCs is a function', () => {
+  const { updateIOCs } = require('../../src/ioc/updater.js');
+  assert(typeof updateIOCs === 'function', 'updateIOCs should be a function');
+});
+
+// SKIPPED: updateIOCs does real network downloads (~36s). No harness currently covers it
+// (run-tests-integration.js only runs ground-truth + evaluate). To exercise it, invoke the
+// updater manually or add a mocked-https unit test (see the downloadAndDecompress bootstrap
+// tests below for the EventEmitter/Readable mock pattern).
+console.log('[SKIP] UPDATE: updateIOCs does not reduce IOC count (network)');
+addSkipped(1);
+
+// ============================================
+// FALSE POSITIVES TESTS
+// ============================================
+
+console.log('\n=== FALSE POSITIVES TESTS ===\n');
+
+await asyncTest('FALSE POSITIVES: Clean project = no threats', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'clean'));
+  assert(result.summary.total === 0, 'Clean project should have no threats, got ' + result.summary.total);
+});
+
+await asyncTest('FALSE POSITIVES: Comments ignored', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'clean'));
+  const criticals = result.threats.filter(t => t.severity === 'CRITICAL');
+  assert(criticals.length === 0, 'Comments should not trigger CRITICAL threats');
+});
+
+await asyncTest('FALSE POSITIVES: Safe env vars not flagged', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'clean'));
+  const envThreats = result.threats.filter(t => t.type === 'env_access');
+  assert(envThreats.length === 0, 'Safe env vars should not trigger env_access');
+});
+
+// ============================================
+// EDGE CASES TESTS
+// ============================================
+
+console.log('\n=== EDGE CASES TESTS ===\n');
+
+await asyncTest('EDGE: Empty file does not crash', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'edge', 'empty'));
+  assert(result !== undefined, 'Should not crash on empty file');
+});
+
+await asyncTest('EDGE: Non-JS file ignored', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'edge', 'non-js'));
+  assert(result.summary.total === 0, 'Non-JS files should produce no threats');
+});
+
+await asyncTest('EDGE: Invalid JS syntax does not crash', async () => {
+  const result = await runScanDirect(path.join(TESTS_DIR, 'edge', 'invalid-syntax'));
+  assert(result !== undefined, 'Should not crash on invalid syntax');
+});
+
+await asyncTest('EDGE: Very large file does not timeout', async () => {
+  const start = Date.now();
+  await runScanDirect(path.join(TESTS_DIR, 'edge', 'large-file'));
+  const duration = Date.now() - start;
+  assert(duration < 30000, 'Should not take more than 30s');
+});
+
+// ============================================
+// MITRE RULES TESTS
+// ============================================
+
+console.log('\n=== MITRE TESTS ===\n');
+
+test('MITRE: T1552.001 - Credentials in Files', () => {
+  const { getRule } = require('../../src/rules/index.js');
+  const rule = getRule('env_access');
+  assert(rule.mitre === 'T1552.001', 'env_access rule should map to T1552.001');
+});
+
+test('MITRE: T1059 - Command Execution', () => {
+  const { getRule } = require('../../src/rules/index.js');
+  const rule = getRule('dangerous_call_eval');
+  assert(rule.mitre.startsWith('T1059'), 'dangerous_call_eval rule should map to T1059.*, got ' + rule.mitre);
+});
+
+test('MITRE: T1041 - Exfiltration', () => {
+  const { getRule } = require('../../src/rules/index.js');
+  const rule = getRule('suspicious_dataflow');
+  assert(rule.mitre === 'T1041', 'suspicious_dataflow rule should map to T1041');
+});
+
+// ============================================
+// WHITELIST / REHABILITATED PACKAGES TESTS
+// ============================================
+
+console.log('\n=== WHITELIST TESTS ===\n');
+
+test('WHITELIST: chalk is in REHABILITATED_PACKAGES', () => {
+  const { REHABILITATED_PACKAGES } = require('../../src/safe-install.js');
+  assert(REHABILITATED_PACKAGES['chalk'], 'chalk should be in REHABILITATED_PACKAGES');
+  assert(REHABILITATED_PACKAGES['chalk'].safe === true, 'chalk.safe should be true');
+});
+
+test('WHITELIST: debug is in REHABILITATED_PACKAGES', () => {
+  const { REHABILITATED_PACKAGES } = require('../../src/safe-install.js');
+  assert(REHABILITATED_PACKAGES['debug'], 'debug should be in REHABILITATED_PACKAGES');
+  assert(REHABILITATED_PACKAGES['debug'].safe === true, 'debug.safe should be true');
+});
+
+test('WHITELIST: ua-parser-js has specific compromised versions', () => {
+  const { REHABILITATED_PACKAGES } = require('../../src/safe-install.js');
+  const uap = REHABILITATED_PACKAGES['ua-parser-js'];
+  assert(uap, 'ua-parser-js should be in REHABILITATED_PACKAGES');
+  assert(uap.safe === false, 'ua-parser-js.safe should be false');
+  assert(uap.compromised.includes('0.7.29'), 'Should include 0.7.29');
+  assert(uap.compromised.includes('0.8.0'), 'Should include 0.8.0');
+  assert(uap.compromised.includes('1.0.0'), 'Should include 1.0.0');
+});
+
+test('WHITELIST: checkRehabilitated returns safe for chalk', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('chalk', '5.4.0');
+  assert(result !== null, 'chalk should be recognized');
+  assert(result.safe === true, 'chalk should be safe');
+});
+
+test('WHITELIST: checkRehabilitated returns unsafe for ua-parser-js@0.7.29', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('ua-parser-js', '0.7.29');
+  assert(result !== null, 'ua-parser-js should be recognized');
+  assert(result.safe === false, 'ua-parser-js@0.7.29 should be unsafe');
+});
+
+test('WHITELIST: checkRehabilitated returns safe for ua-parser-js@0.7.35', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('ua-parser-js', '0.7.35');
+  assert(result !== null, 'ua-parser-js should be recognized');
+  assert(result.safe === true, 'ua-parser-js@0.7.35 should be safe');
+});
+
+test('WHITELIST: checkRehabilitated returns null for unknown package', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('some-random-package', '1.0.0');
+  assert(result === null, 'Unknown package should return null');
+});
+
+// ============================================
+// IOC LOADING TESTS
+// ============================================
+
+console.log('\n=== IOC LOADING TESTS ===\n');
+
+test('IOC: loadCachedIOCs returns packages', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  assert(iocs.packages, 'Should have packages');
+  assert(iocs.packages.length > 0, 'Should have at least one package');
+});
+
+test('IOC: loadCachedIOCs returns hashes', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  assert(Array.isArray(iocs.hashes), 'hashes should be an array');
+  // Floor guaranteed without any runtime/gitignored file: loadCachedIOCs always merges
+  // the committed iocs/hashes.yaml (loadYAMLIOCs → merged.hashes), which ships sha256 entries.
+  assert(iocs.hashes.length > 0, 'YAML-embedded hashes (iocs/hashes.yaml) guarantee a non-empty floor');
+  assert(iocs.hashesSet instanceof Set && iocs.hashesSet.size === new Set(iocs.hashes).size,
+    'hashesSet must mirror the hashes array for O(1) lookup');
+});
+
+test('IOC: loadCachedIOCs returns markers', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  assert(iocs.markers, 'Should have markers');
+  assert(iocs.markers.length > 0, 'Should have at least one marker');
+});
+
+test('IOC: Typosquats have wildcard version', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  const typosquats = iocs.packages.filter(p => p.source === 'typosquat');
+  assert(typosquats.length > 0, 'Should have typosquats');
+  const allWildcard = typosquats.every(p => p.version === '*');
+  assert(allWildcard, 'All typosquats should have version *');
+});
+
+test('IOC: Historical packages have specific versions', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  const eventStream = iocs.packages.find(p => p.name === 'event-stream');
+  assert(eventStream, 'event-stream should be in IOCs');
+  assert(eventStream.version === '3.3.6', 'event-stream should have version 3.3.6');
+});
+
+// ============================================
+// IOC MATCHING TESTS
+// ============================================
+
+console.log('\n=== IOC MATCHING TESTS ===\n');
+
+test('IOC MATCH: Wildcard version matches all versions', () => {
+  const iocs = { packages: [{ name: 'malicious-pkg', version: '*' }] };
+  const pkg = { name: 'malicious-pkg', version: '1.2.3' };
+  const match = iocs.packages.find(p => {
+    if (p.name !== pkg.name) return false;
+    if (p.version === '*') return true;
+    return p.version === pkg.version;
+  });
+  assert(match, 'Wildcard should match');
+});
+
+test('IOC MATCH: Specific version matches only that version', () => {
+  const iocs = { packages: [{ name: 'some-pkg', version: '1.0.0' }] };
+
+  const pkg1 = { name: 'some-pkg', version: '1.0.0' };
+  const match1 = iocs.packages.find(p => p.name === pkg1.name && (p.version === '*' || p.version === pkg1.version));
+  assert(match1, 'Exact version should match');
+
+  const pkg2 = { name: 'some-pkg', version: '1.0.1' };
+  const match2 = iocs.packages.find(p => p.name === pkg2.name && (p.version === '*' || p.version === pkg2.version));
+  assert(!match2, 'Different version should not match');
+});
+
+// ============================================
+// SCRAPER / DATA TESTS
+// ============================================
+
+console.log('\n=== SCRAPER / DATA TESTS ===\n');
+
+test('SCRAPER: Module loads without error', () => {
+  const { runScraper } = require('../../src/ioc/scraper.js');
+  assert(typeof runScraper === 'function', 'runScraper should be a function');
+});
+
+test('FIXTURE: test-iocs.json loads and is valid', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  assert(iocs.packages, 'Should have packages');
+  assert(Array.isArray(iocs.packages), 'packages should be an array');
+});
+
+test('FIXTURE: IOCs have required fields', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  const sample = iocs.packages[0];
+  assert(sample.name, 'IOC should have name');
+  assert(sample.version, 'IOC should have version');
+  assert(sample.source, 'IOC should have source');
+});
+
+test('FIXTURE: IOC fixture has expected count', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  assert(iocs.packages.length === 15, `Should have 15 IOCs in fixture, has ${iocs.packages.length}`);
+});
+
+// ============================================
+// COMPACT IOC TESTS
+// ============================================
+
+console.log('\n=== COMPACT IOC TESTS ===\n');
+
+test('COMPACT: iocs-compact.json exists', () => {
+  // iocs-compact.json is no longer shipped in the repo (git rm --cached), downloaded at runtime via bootstrap.
+  // Verify that generateCompactIOCs produces a valid structure that could be written to disk.
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [{ name: 'test-pkg', version: '*', severity: 'critical' }],
+    pypi_packages: [],
+    hashes: [], markers: [], files: [],
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  assert(compact && typeof compact === 'object', 'generateCompactIOCs should produce a valid object');
+  assert(typeof JSON.stringify(compact) === 'string', 'compact IOC data should be serializable to JSON');
+});
+
+test('COMPACT: has expected compact format fields', () => {
+  // Use in-memory fixture via generateCompactIOCs instead of reading file from disk
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [
+      { name: 'evil-pkg', version: '1.0.0', severity: 'critical' },
+      { name: 'bad-lib', version: '*', severity: 'critical' }
+    ],
+    pypi_packages: [
+      { name: 'evil-py', version: '1.0', severity: 'critical' },
+      { name: 'bad-pylib', version: '*', severity: 'critical' }
+    ],
+    hashes: ['abc123'], markers: ['setup_bun.js'], files: ['inject.js'],
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  assert(compact.defaultSeverity, 'Should have defaultSeverity');
+  assert(Array.isArray(compact.wildcards), 'wildcards should be an array');
+  assert(compact.wildcards.length > 0, 'Should have wildcard packages');
+  assert(typeof compact.versioned === 'object', 'versioned should be an object');
+  assert(Array.isArray(compact.hashes), 'hashes should be an array');
+  assert(Array.isArray(compact.markers), 'markers should be an array');
+  assert(Array.isArray(compact.pypi_wildcards), 'pypi_wildcards should be an array');
+  assert(typeof compact.pypi_versioned === 'object', 'pypi_versioned should be an object');
+});
+
+test('COMPACT: does NOT have enriched package objects', () => {
+  // Use in-memory fixture via generateCompactIOCs instead of reading file from disk
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [
+      { name: 'evil-pkg', version: '1.0.0', severity: 'critical', description: 'Bad', references: ['http://x.com'] },
+      { name: 'bad-lib', version: '*', severity: 'critical', description: 'Malware' }
+    ],
+    pypi_packages: [], hashes: [], markers: [], files: [],
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  // Compact format stores names as strings, not objects with description/references
+  assert(typeof compact.wildcards[0] === 'string', 'Wildcard entries should be plain strings');
+  const firstVersionedKey = Object.keys(compact.versioned)[0];
+  assert(Array.isArray(compact.versioned[firstVersionedKey]), 'Versioned entries should be version arrays');
+  assert(typeof compact.versioned[firstVersionedKey][0] === 'string', 'Versions should be plain strings');
+});
+
+test('COMPACT: is significantly smaller than full IOCs (in-memory, no gitignored files)', () => {
+  // The on-disk iocs.json/iocs-compact.json are gitignored (absent in CI), so build a
+  // representative full DB in memory: realistic enriched entries the way the scraper
+  // writes them, then compare serialized sizes of full vs generateCompactIOCs output.
+  const { generateCompactIOCs, expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const packages = [];
+  for (let i = 0; i < 300; i++) {
+    packages.push({
+      id: 'MAL-2026-' + i,
+      name: 'evil-pkg-' + i,
+      version: '1.0.' + (i % 10),
+      severity: 'critical',
+      confidence: 'high',
+      source: 'osv-malicious',
+      description: 'Malicious package pushed via compromised maintainer account, exfiltrates env + npm token (#' + i + ')',
+      references: ['https://osv.dev/vulnerability/MAL-2026-' + i, 'https://github.com/advisories/GHSA-' + i],
+      mitre: 'T1195.002',
+      published: '2026-01-01T00:00:00.000Z',
+      freshness: { added_at: '2026-01-01T00:00:00.000Z', source: 'osv-malicious', confidence: 'high' },
+      sources: [{ name: 'osv-malicious', added_at: '2026-01-01T00:00:00.000Z' }]
+    });
+  }
+  const full = { packages, pypi_packages: [], hashes: [], markers: [], files: [], updated: '2026-01-01T00:00:00.000Z', sources: ['test'] };
+  const compact = generateCompactIOCs(full);
+  const fullSize = JSON.stringify(full).length;
+  const compactSize = JSON.stringify(compact).length;
+  assert(compactSize < fullSize, `Compact (${compactSize}) must be smaller than full (${fullSize})`);
+  assert(compactSize < fullSize / 5, `Compact (${compactSize}) should be at least 5x smaller than full (${fullSize})`);
+  // Size reduction must not lose entries: every name@version survives the round trip
+  const expanded = expandCompactIOCs(compact);
+  assert(expanded.packages.length === packages.length,
+    `Round trip must preserve all ${packages.length} entries, got ${expanded.packages.length}`);
+});
+
+test('COMPACT: generateCompactIOCs strips enriched data', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [
+      { name: 'evil-pkg', version: '1.0.0', severity: 'critical', description: 'Bad stuff', references: ['http://example.com'], mitre: 'T1195.002', source: 'test', freshness: { added_at: '2026-01-01' } },
+      { name: 'bad-lib', version: '*', severity: 'critical', description: 'Malware', source: 'osv' }
+    ],
+    pypi_packages: [
+      { name: 'evil-py', version: '1.0', severity: 'critical', source: 'osv-malicious-pypi' },
+      { name: 'bad-pylib', version: '*', severity: 'critical', source: 'osv-malicious-pypi' }
+    ],
+    hashes: ['abc123'],
+    markers: ['setup_bun.js'],
+    files: ['inject.js'],
+    updated: '2026-01-01T00:00:00.000Z',
+    sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  assert(compact.wildcards.length === 1, 'Should have 1 npm wildcard');
+  assert(compact.wildcards[0] === 'bad-lib', 'Wildcard should be bad-lib');
+  assert(compact.versioned['evil-pkg'], 'Should have evil-pkg in versioned');
+  assert(compact.versioned['evil-pkg'][0] === '1.0.0', 'Should have version 1.0.0');
+  assert(compact.pypi_wildcards.length === 1, 'Should have 1 PyPI wildcard');
+  assert(compact.pypi_wildcards[0] === 'bad-pylib', 'PyPI wildcard should be bad-pylib');
+  assert(compact.pypi_versioned['evil-py'], 'Should have evil-py in pypi_versioned');
+  assert(compact.pypi_versioned['evil-py'][0] === '1.0', 'Should have version 1.0');
+  assert(compact.defaultSeverity === 'critical', 'Default severity should be critical');
+  assert(compact.hashes[0] === 'abc123', 'Should preserve hashes');
+});
+
+test('COMPACT: expandCompactIOCs round-trips correctly', () => {
+  const { generateCompactIOCs, expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [
+      { name: 'evil-pkg', version: '1.0.0', severity: 'critical' },
+      { name: 'bad-lib', version: '*', severity: 'critical' },
+      { name: 'evil-pkg', version: '2.0.0', severity: 'critical' }
+    ],
+    pypi_packages: [
+      { name: 'evil-py', version: '1.0', severity: 'critical' },
+      { name: 'bad-pylib', version: '*', severity: 'critical' }
+    ],
+    hashes: ['abc123'],
+    markers: ['setup_bun.js'],
+    files: ['inject.js'],
+    updated: '2026-01-01T00:00:00.000Z',
+    sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  const expanded = expandCompactIOCs(compact);
+  assert(expanded.packages.length === 3, 'Should expand back to 3 npm packages');
+  const keys = new Set(expanded.packages.map(p => p.name + '@' + p.version));
+  assert(keys.has('evil-pkg@1.0.0'), 'Should have evil-pkg@1.0.0');
+  assert(keys.has('evil-pkg@2.0.0'), 'Should have evil-pkg@2.0.0');
+  assert(keys.has('bad-lib@*'), 'Should have bad-lib@*');
+  assert(expanded.pypi_packages.length === 2, 'Should expand back to 2 PyPI packages');
+  const pypiKeys = new Set(expanded.pypi_packages.map(p => p.name + '@' + p.version));
+  assert(pypiKeys.has('evil-py@1.0'), 'Should have evil-py@1.0');
+  assert(pypiKeys.has('bad-pylib@*'), 'Should have bad-pylib@*');
+  assert(expanded.hashes[0] === 'abc123', 'Should preserve hashes');
+});
+
+test('COMPACT: loadCachedIOCs works with compact fallback', () => {
+  const { loadCachedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = loadCachedIOCs();
+  assert(iocs.packagesMap, 'Should have packagesMap');
+  assert(iocs.wildcardPackages, 'Should have wildcardPackages');
+  assert(iocs.pypiPackagesMap, 'Should have pypiPackagesMap');
+  assert(iocs.pypiWildcardPackages, 'Should have pypiWildcardPackages');
+  assert(iocs.hashesSet, 'Should have hashesSet');
+  assert(iocs.packages.length > 0, 'Should have packages loaded');
+  assert(Array.isArray(iocs.pypi_packages), 'Should have pypi_packages array');
+});
+
+test('COMPACT: litellm versioned IOC is present in compact data', () => {
+  // Use in-memory fixture with litellm-like versioned PyPI IOC
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [],
+    pypi_packages: [
+      { name: 'litellm', version: '1.82.7', severity: 'critical' },
+      { name: 'litellm', version: '1.82.8', severity: 'critical' },
+      { name: 'bad-pylib', version: '*', severity: 'critical' }
+    ],
+    hashes: [], markers: [], files: [],
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  assert(compact.pypi_versioned['litellm'], 'litellm should be in pypi_versioned');
+  assert(compact.pypi_versioned['litellm'].includes('1.82.7'), 'litellm should have version 1.82.7');
+  assert(compact.pypi_versioned['litellm'].includes('1.82.8'), 'litellm should have version 1.82.8');
+  assert(!compact.pypi_wildcards.includes('litellm'), 'litellm should NOT be in pypi_wildcards (versioned IOC)');
+});
+
+test('COMPACT: litellm IOC expands correctly via expandCompactIOCs', () => {
+  // Use in-memory fixture with litellm-like versioned PyPI IOC
+  const { generateCompactIOCs, expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [],
+    pypi_packages: [
+      { name: 'litellm', version: '1.82.7', severity: 'critical' },
+      { name: 'litellm', version: '1.82.8', severity: 'critical' }
+    ],
+    hashes: [], markers: [], files: [],
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  };
+  const compact = generateCompactIOCs(input);
+  const expanded = expandCompactIOCs(compact);
+  const litellmEntries = expanded.pypi_packages.filter(p => p.name === 'litellm');
+  assert(litellmEntries.length === 2, `Expected 2 litellm entries, got ${litellmEntries.length}`);
+  const versions = litellmEntries.map(e => e.version);
+  assert(versions.includes('1.82.7'), 'Should have litellm@1.82.7');
+  assert(versions.includes('1.82.8'), 'Should have litellm@1.82.8');
+});
+
+// ============================================
+// YAML LOADER TESTS
+// ============================================
+
+console.log('\n=== YAML LOADER TESTS ===\n');
+
+test('YAML: builtin.yaml exists', () => {
+  const builtinPath = path.join(__dirname, '..', '..', 'iocs', 'builtin.yaml');
+  assert(fs.existsSync(builtinPath), 'iocs/builtin.yaml should exist');
+});
+
+test('YAML: loadYAMLIOCs returns packages', () => {
+  const { loadYAMLIOCs } = require('../../src/ioc/yaml-loader.js');
+  const iocs = loadYAMLIOCs();
+  assert(iocs.packages, 'Should have packages');
+  assert(iocs.packages.length > 0, 'Should have at least one package');
+});
+
+test('YAML: Contains Shai-Hulud packages', () => {
+  const { loadYAMLIOCs } = require('../../src/ioc/yaml-loader.js');
+  const iocs = loadYAMLIOCs();
+  const shaiHulud = iocs.packages.filter(p => p.source && p.source.includes('shai-hulud'));
+  assert(shaiHulud.length > 0, 'Should have Shai-Hulud packages');
+});
+
+test('YAML: Contains Shai-Hulud markers', () => {
+  const { loadYAMLIOCs } = require('../../src/ioc/yaml-loader.js');
+  const iocs = loadYAMLIOCs();
+  assert(iocs.markers, 'Should have markers');
+  const hasShaiHulud = iocs.markers.some(m => m.pattern && m.pattern.includes('Shai-Hulud'));
+  assert(hasShaiHulud, 'Should have Shai-Hulud marker');
+});
+
+// ============================================
+// NON-REGRESSION TESTS
+// ============================================
+
+console.log('\n=== NON-REGRESSION TESTS ===\n');
+
+test('REGRESSION: chalk should not block (rehabilitated)', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('chalk', '5.4.0');
+  assert(result && result.safe === true, 'chalk should not block');
+});
+
+test('REGRESSION: debug should not block (rehabilitated)', () => {
+  const { checkRehabilitated } = require('../../src/safe-install.js');
+  const result = checkRehabilitated('debug', '4.3.0');
+  assert(result && result.safe === true, 'debug should not block');
+});
+
+test('REGRESSION: lodash is not in IOCs', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  const lodash = iocs.packages.find(p => p.name === 'lodash');
+  assert(!lodash, 'lodash should not be in IOCs');
+});
+
+test('REGRESSION: loadash (typosquat) IS in IOCs', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  const loadash = iocs.packages.find(p => p.name === 'loadash');
+  assert(loadash, 'loadash (typosquat) should be in IOCs');
+});
+
+test('REGRESSION: express is not in IOCs', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  const express = iocs.packages.find(p => p.name === 'express');
+  assert(!express, 'express should not be in IOCs');
+});
+
+test('REGRESSION: axios is not in IOCs', () => {
+  const iocs = require('../fixtures/test-iocs.json');
+  const axios = iocs.packages.find(p => p.name === 'axios');
+  assert(!axios, 'axios should not be in IOCs');
+});
+
+// ============================================
+// PACKAGE SECURITY TESTS
+// ============================================
+
+console.log('\n=== PACKAGE SECURITY TESTS ===\n');
+
+test('SECURITY: isValidPackageName accepts lodash', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(isValidPackageName('lodash'), 'lodash should be valid');
+});
+
+test('SECURITY: isValidPackageName accepts @scope/package', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(isValidPackageName('@types/node'), '@types/node should be valid');
+});
+
+test('SECURITY: isValidPackageName rejects shell injection', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(!isValidPackageName('foo; rm -rf /'), 'shell injection should be invalid');
+});
+
+test('SECURITY: isValidPackageName rejects backticks', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(!isValidPackageName('foo`whoami`'), 'backticks should be invalid');
+});
+
+test('SECURITY: isValidPackageName rejects $(...)', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(!isValidPackageName('foo$(cat /etc/passwd)'), '$() should be invalid');
+});
+
+test('SECURITY: isValidPackageName rejects pipes', () => {
+  const { isValidPackageName } = require('../../src/safe-install.js');
+  assert(!isValidPackageName('foo | cat /etc/passwd'), 'pipe should be invalid');
+});
+
+// ============================================
+// BOOTSTRAP TESTS
+// ============================================
+
+console.log('\n=== BOOTSTRAP TESTS ===\n');
+
+test('BOOTSTRAP: ensureIOCs is an async function', () => {
+  const { ensureIOCs } = require('../../src/ioc/bootstrap.js');
+  assert(typeof ensureIOCs === 'function', 'ensureIOCs should be a function');
+  // Async functions return promises when called — check constructor name
+  assert(ensureIOCs.constructor.name === 'AsyncFunction', 'ensureIOCs should be async');
+});
+
+test('BOOTSTRAP: IOCS_PATH points to ~/.muaddib/data/iocs.json', () => {
+  const { IOCS_PATH } = require('../../src/ioc/bootstrap.js');
+  const expected = path.join(os.homedir(), '.muaddib', 'data', 'iocs.json');
+  assert(IOCS_PATH === expected, 'IOCS_PATH should be ' + expected + ', got ' + IOCS_PATH);
+});
+
+test('BOOTSTRAP: HOME_DATA_DIR points to ~/.muaddib/data/', () => {
+  const { HOME_DATA_DIR } = require('../../src/ioc/bootstrap.js');
+  const expected = path.join(os.homedir(), '.muaddib', 'data');
+  assert(HOME_DATA_DIR === expected, 'HOME_DATA_DIR should be ' + expected + ', got ' + HOME_DATA_DIR);
+});
+
+test('BOOTSTRAP: MIN_IOCS_SIZE is 1MB', () => {
+  const { MIN_IOCS_SIZE } = require('../../src/ioc/bootstrap.js');
+  assert(MIN_IOCS_SIZE === 1_000_000, 'MIN_IOCS_SIZE should be 1000000, got ' + MIN_IOCS_SIZE);
+});
+
+test('BOOTSTRAP: IOCS_URL points to GitHub Releases', () => {
+  const { IOCS_URL } = require('../../src/ioc/bootstrap.js');
+  assert(IOCS_URL.startsWith('https://github.com/'), 'URL should start with https://github.com/');
+  assert(IOCS_URL.endsWith('iocs.json.gz'), 'URL should end with iocs.json.gz');
+});
+
+test('BOOTSTRAP: module exports all expected symbols', () => {
+  const bootstrap = require('../../src/ioc/bootstrap.js');
+  assert(typeof bootstrap.ensureIOCs === 'function', 'Should export ensureIOCs');
+  assert(typeof bootstrap.downloadAndDecompress === 'function', 'Should export downloadAndDecompress');
+  assert(typeof bootstrap.isAllowedRedirect === 'function', 'Should export isAllowedRedirect');
+  assert(typeof bootstrap.IOCS_URL === 'string', 'Should export IOCS_URL');
+  assert(typeof bootstrap.IOCS_PATH === 'string', 'Should export IOCS_PATH');
+  assert(typeof bootstrap.HOME_DATA_DIR === 'string', 'Should export HOME_DATA_DIR');
+  assert(typeof bootstrap.MIN_IOCS_SIZE === 'number', 'Should export MIN_IOCS_SIZE');
+});
+
+test('BOOTSTRAP: isAllowedRedirect accepts github.com', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('https://github.com/foo/bar') === true, 'github.com should be allowed');
+});
+
+test('BOOTSTRAP: isAllowedRedirect accepts objects.githubusercontent.com', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('https://objects.githubusercontent.com/foo') === true, 'objects.githubusercontent.com should be allowed');
+});
+
+test('BOOTSTRAP: isAllowedRedirect accepts release-assets.githubusercontent.com', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('https://release-assets.githubusercontent.com/foo') === true, 'release-assets.githubusercontent.com should be allowed');
+});
+
+test('BOOTSTRAP: isAllowedRedirect rejects HTTP', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('http://github.com/foo') === false, 'HTTP should be rejected');
+});
+
+test('BOOTSTRAP: isAllowedRedirect rejects unknown domains', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('https://evil.com/iocs.json.gz') === false, 'Unknown domain should be rejected');
+});
+
+test('BOOTSTRAP: isAllowedRedirect rejects invalid URLs', () => {
+  const { isAllowedRedirect } = require('../../src/ioc/bootstrap.js');
+  assert(isAllowedRedirect('not-a-url') === false, 'Invalid URL should be rejected');
+});
+
+await asyncTest('BOOTSTRAP: ensureIOCs skips download when cache file exists and is large enough (no network)', async () => {
+  // Deterministic in every environment: fs is mocked to present a large-enough cache,
+  // ensureIOCs is REALLY called, and https.get is spied to prove the skip path never
+  // touches the network (the complementary check the mocked-fs test at BOOTSTRAP-COV
+  // 'returns true when IOC file exists' does not make).
+  const { ensureIOCs, IOCS_PATH, HOME_DATA_DIR, MIN_IOCS_SIZE, _resetEnsureIocsForTests } = require('../../src/ioc/bootstrap.js');
+  const https = require('https');
+  _resetEnsureIocsForTests();
+  const origExists = fs.existsSync;
+  const origStat = fs.statSync;
+  const origHttpsGet = https.get;
+  let downloadAttempts = 0;
+  fs.existsSync = (p) => {
+    if (p === HOME_DATA_DIR) return true;
+    if (p === IOCS_PATH) return true;
+    return origExists(p);
+  };
+  fs.statSync = (p) => {
+    if (p === IOCS_PATH) return { size: MIN_IOCS_SIZE }; // exactly at the threshold (>= passes)
+    return origStat(p);
+  };
+  https.get = () => {
+    downloadAttempts++;
+    throw new Error('the skip path must never open a network connection');
+  };
+  try {
+    const result = await ensureIOCs();
+    assert(result === true, 'Should return true when a large-enough cache exists');
+    assert(downloadAttempts === 0, 'Skip path must not attempt any download, got ' + downloadAttempts);
+  } finally {
+    fs.existsSync = origExists;
+    fs.statSync = origStat;
+    https.get = origHttpsGet;
+    _resetEnsureIocsForTests(); // don't leak the memoized true into later bootstrap tests
+  }
+});
+
+await asyncTest('BOOTSTRAP-COV: downloadAndDecompress rejects on connection error', async () => {
+  // Local require: the top-level destructure lives after this test in file order (TDZ) —
+  // a bare `downloadAndDecompress` here throws ReferenceError, which `instanceof Error`
+  // silently accepted, making this test vacuous.
+  const { downloadAndDecompress } = require('../../src/ioc/bootstrap.js');
+  const https = require('https');
+  const origHttpsGet = https.get;
+  https.get = function(_url, _opts, _cb) {
+    const EventEmitter = require('events');
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    setImmediate(() => req.emit('error', new Error('connect ECONNREFUSED')));
+    return req;
+  };
+  try {
+    await downloadAndDecompress('https://fake-host/nonexistent', path.join(os.tmpdir(), 'test-iocs-' + Date.now() + '.json'));
+    assert(false, 'Should have thrown');
+  } catch (err) {
+    assertIncludes(err.message, 'ECONNREFUSED', 'Should propagate the connection error, got: ' + err.message);
+  } finally {
+    https.get = origHttpsGet;
+  }
+});
+
+await asyncTest('BOOTSTRAP-COV: downloadAndDecompress rejects decompression bombs past the cap', async () => {
+  const https = require('https');
+  const zlibMod = require('zlib');
+  const { Readable } = require('stream');
+  const origHttpsGet = https.get;
+  const origEnv = process.env.MUADDIB_BOOTSTRAP_MAX_DECOMPRESSED;
+  const bootstrapPath = require.resolve('../../src/ioc/bootstrap.js');
+  // Reload bootstrap with a tiny cap (the cap is read at module load)
+  process.env.MUADDIB_BOOTSTRAP_MAX_DECOMPRESSED = '1000';
+  delete require.cache[bootstrapPath];
+  const { downloadAndDecompress: dadSmallCap } = require(bootstrapPath);
+  // 100KB decompressed >> 1000-byte cap, but only a few gzipped bytes on the wire
+  const gzBomb = zlibMod.gzipSync(Buffer.alloc(100000, 0x61));
+  https.get = function(_url, _opts, cb) {
+    const req = new (require('events').EventEmitter)();
+    req.destroy = () => {};
+    const res = Readable.from([gzBomb]);
+    res.statusCode = 200;
+    res.headers = {};
+    setImmediate(() => cb(res));
+    return req;
+  };
+  const dest = path.join(os.tmpdir(), 'test-bomb-' + Date.now() + '.json');
+  try {
+    await dadSmallCap('https://fake-host/iocs.json.gz', dest);
+    assert(false, 'Should have rejected past the decompressed-size cap');
+  } catch (err) {
+    assertIncludes(err.message, 'exceeds cap', 'Should reject with the cap error, got: ' + err.message);
+    assert(!fs.existsSync(dest), 'No output file must be left behind');
+  } finally {
+    https.get = origHttpsGet;
+    if (origEnv === undefined) delete process.env.MUADDIB_BOOTSTRAP_MAX_DECOMPRESSED;
+    else process.env.MUADDIB_BOOTSTRAP_MAX_DECOMPRESSED = origEnv;
+    delete require.cache[bootstrapPath];
+    require(bootstrapPath); // restore module with default cap for subsequent tests
+  }
+});
+
+await asyncTest('BOOTSTRAP-COV: downloadAndDecompress accepts payloads under the cap', async () => {
+  // Local require (not the top-level destructure — declared later in file order, TDZ).
+  const { downloadAndDecompress } = require('../../src/ioc/bootstrap.js');
+  const https = require('https');
+  const zlibMod = require('zlib');
+  const { Readable } = require('stream');
+  const origHttpsGet = https.get;
+  const payload = JSON.stringify({ packages: [{ name: 'ok', version: '*' }] });
+  const gzOk = zlibMod.gzipSync(Buffer.from(payload));
+  https.get = function(_url, _opts, cb) {
+    const req = new (require('events').EventEmitter)();
+    req.destroy = () => {};
+    const res = Readable.from([gzOk]);
+    res.statusCode = 200;
+    res.headers = {};
+    setImmediate(() => cb(res));
+    return req;
+  };
+  const dest = path.join(os.tmpdir(), 'test-ok-' + Date.now() + '.json');
+  try {
+    await downloadAndDecompress('https://fake-host/iocs.json.gz', dest);
+    assert(fs.existsSync(dest), 'Output file must exist');
+    assert(fs.readFileSync(dest, 'utf8') === payload, 'Decompressed content must be intact');
+  } finally {
+    https.get = origHttpsGet;
+    try { fs.unlinkSync(dest); } catch {}
+  }
+});
+
+// ============================================
+// MERGE IOCs TESTS
+// ============================================
+
+console.log('\n=== MERGE IOCs TESTS ===\n');
+
+test('MERGE: mergeIOCs deduplicates packages by name@version', () => {
+  const { mergeIOCs } = require('../../src/ioc/updater.js');
+  const target = { packages: [{ name: 'pkg-a', version: '1.0' }], pypi_packages: [], hashes: [], markers: [], files: [] };
+  const source = {
+    packages: [{ name: 'pkg-a', version: '1.0' }, { name: 'pkg-b', version: '2.0' }],
+    pypi_packages: [], hashes: [], markers: [], files: []
+  };
+  const added = mergeIOCs(target, source);
+  assert(added === 1, 'Should add 1 new package, got ' + added);
+  assert(target.packages.length === 2, 'Target should have 2 packages');
+});
+
+test('MERGE: mergeIOCs merges PyPI packages', () => {
+  const { mergeIOCs } = require('../../src/ioc/updater.js');
+  const target = { packages: [], pypi_packages: [], hashes: [], markers: [], files: [] };
+  const source = {
+    packages: [],
+    pypi_packages: [{ name: 'evil-py', version: '1.0' }, { name: 'bad-py', version: '*' }],
+    hashes: [], markers: [], files: []
+  };
+  mergeIOCs(target, source);
+  assert(target.pypi_packages.length === 2, 'Should have 2 PyPI packages');
+});
+
+test('MERGE: mergeIOCs merges hashes, markers, and files', () => {
+  const { mergeIOCs } = require('../../src/ioc/updater.js');
+  const target = { packages: [], pypi_packages: [], hashes: ['hash1'], markers: ['marker1'], files: ['file1'] };
+  const source = {
+    packages: [], pypi_packages: [],
+    hashes: ['hash1', 'hash2'], markers: ['marker2'], files: ['file1', 'file2']
+  };
+  mergeIOCs(target, source);
+  assert(target.hashes.length === 2, 'Should have 2 hashes (deduped), got ' + target.hashes.length);
+  assert(target.markers.length === 2, 'Should have 2 markers');
+  assert(target.files.length === 2, 'Should have 2 files (deduped)');
+});
+
+test('MERGE: mergeIOCs handles missing pypi_packages in target', () => {
+  const { mergeIOCs } = require('../../src/ioc/updater.js');
+  const target = { packages: [], hashes: [], markers: [], files: [] };
+  const source = { packages: [], pypi_packages: [{ name: 'test', version: '*' }], hashes: [], markers: [], files: [] };
+  mergeIOCs(target, source);
+  assert(target.pypi_packages.length === 1, 'Should create pypi_packages and add 1');
+});
+
+// ============================================
+// CREATE OPTIMIZED IOCs TESTS
+// ============================================
+
+console.log('\n=== CREATE OPTIMIZED IOCs TESTS ===\n');
+
+test('OPTIMIZED: createOptimizedIOCs produces Map/Set structures', () => {
+  const { createOptimizedIOCs } = require('../../src/ioc/updater.js');
+  const iocs = {
+    packages: [
+      { name: 'evil-pkg', version: '*' },
+      { name: 'evil-pkg', version: '1.0.0' },
+      { name: 'bad-lib', version: '2.0.0' }
+    ],
+    pypi_packages: [
+      { name: 'py-evil', version: '*' },
+      { name: 'py-bad', version: '1.0' }
+    ],
+    hashes: ['abc123', 'def456'],
+    markers: ['setup_bun.js'],
+    files: ['inject.js']
+  };
+  const opt = createOptimizedIOCs(iocs);
+  assert(opt.packagesMap instanceof Map, 'Should have packagesMap');
+  assert(opt.wildcardPackages instanceof Set, 'Should have wildcardPackages');
+  assert(opt.pypiPackagesMap instanceof Map, 'Should have pypiPackagesMap');
+  assert(opt.pypiWildcardPackages instanceof Set, 'Should have pypiWildcardPackages');
+  assert(opt.hashesSet instanceof Set, 'Should have hashesSet');
+  assert(opt.markersSet instanceof Set, 'Should have markersSet');
+  assert(opt.filesSet instanceof Set, 'Should have filesSet');
+  assert(opt.wildcardPackages.has('evil-pkg'), 'evil-pkg should be in wildcards');
+  assert(!opt.wildcardPackages.has('bad-lib'), 'bad-lib should NOT be in wildcards');
+  assert(opt.pypiWildcardPackages.has('py-evil'), 'py-evil should be in pypi wildcards');
+  assert(opt.packagesMap.get('evil-pkg').length === 2, 'evil-pkg should have 2 entries');
+  assert(opt.hashesSet.has('abc123'), 'Should have hash abc123');
+  assert(opt.markersSet.has('setup_bun.js'), 'Should have marker');
+  assert(opt.filesSet.has('inject.js'), 'Should have file');
+  assert(opt.packages.length === 3, 'Should preserve original packages array');
+});
+
+// ============================================
+// INVALIDATE CACHE TESTS
+// ============================================
+
+console.log('\n=== INVALIDATE CACHE TESTS ===\n');
+
+test('INVALIDATE: invalidateCache clears cached result', () => {
+  const { loadCachedIOCs, invalidateCache } = require('../../src/ioc/updater.js');
+  // First call populates cache
+  const first = loadCachedIOCs();
+  assert(first.packagesMap, 'First call should return optimized IOCs');
+  // Invalidate
+  invalidateCache();
+  // Second call should reload (we can't easily verify it reloaded, but it shouldn't crash)
+  const second = loadCachedIOCs();
+  assert(second.packagesMap, 'Should still return valid IOCs after invalidate');
+});
+
+test('INVALIDATE: loadCachedIOCs returns a STABLE singleton across calls (no per-call rebuild — heap-leak fix)', () => {
+  const { loadCachedIOCs, invalidateCache } = require('../../src/ioc/updater.js');
+  invalidateCache();
+  const a = loadCachedIOCs();
+  const b = loadCachedIOCs();
+  assert(a === b, 'consecutive calls must return the SAME object (singleton), not a freshly-rebuilt copy');
+});
+
+test('INVALIDATE: a rebuild happens only after invalidateCache, then re-stabilises', () => {
+  const { loadCachedIOCs, invalidateCache } = require('../../src/ioc/updater.js');
+  const a = loadCachedIOCs();
+  invalidateCache();
+  const c = loadCachedIOCs();
+  assert(a !== c, 'after invalidateCache the next load rebuilds (new object)');
+  assert(c === loadCachedIOCs(), 'further loads return the rebuilt singleton (no extra rebuilds)');
+  assert(c.packagesMap instanceof Map && c.packagesMap.size > 0, 'rebuilt store is intact');
+});
+
+// ============================================
+// EXPAND COMPACT IOCs EDGE CASES
+// ============================================
+
+console.log('\n=== EXPAND COMPACT EDGE CASES ===\n');
+
+test('EXPAND: expandCompactIOCs handles severity overrides', () => {
+  const { expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const compact = {
+    defaultSeverity: 'critical',
+    wildcards: ['pkg-a'],
+    versioned: { 'pkg-b': ['1.0.0'] },
+    pypi_wildcards: [],
+    pypi_versioned: {},
+    hashes: [],
+    markers: [],
+    files: [],
+    severityOverrides: { 'pkg-b': { '1.0.0': 'high' } }
+  };
+  const expanded = expandCompactIOCs(compact);
+  const pkgA = expanded.packages.find(p => p.name === 'pkg-a');
+  const pkgB = expanded.packages.find(p => p.name === 'pkg-b');
+  assert(pkgA.severity === 'critical', 'pkg-a should use default severity');
+  assert(pkgB.severity === 'high', 'pkg-b should use override severity "high"');
+});
+
+test('EXPAND: expandCompactIOCs handles empty compact', () => {
+  const { expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const compact = {};
+  const expanded = expandCompactIOCs(compact);
+  assert(expanded.packages.length === 0, 'Should have 0 packages');
+  assert(expanded.pypi_packages.length === 0, 'Should have 0 PyPI packages');
+  assert(expanded.hashes.length === 0, 'Should have 0 hashes');
+});
+
+test('EXPAND: expandCompactIOCs deduplicates wildcards', () => {
+  const { expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const compact = {
+    defaultSeverity: 'critical',
+    wildcards: ['dup-pkg', 'dup-pkg', 'unique-pkg'],
+    versioned: {},
+    pypi_wildcards: [],
+    pypi_versioned: {},
+    hashes: [], markers: [], files: []
+  };
+  const expanded = expandCompactIOCs(compact);
+  const dupCount = expanded.packages.filter(p => p.name === 'dup-pkg').length;
+  assert(dupCount === 1, 'Duplicate wildcards should be deduped, got ' + dupCount);
+});
+
+test('COMPACT: generateCompactIOCs skips __proto__ keys', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const input = {
+    packages: [
+      { name: '__proto__', version: '1.0', severity: 'high' },
+      { name: 'normal-pkg', version: '*', severity: 'critical' }
+    ],
+    pypi_packages: [], hashes: [], markers: [], files: []
+  };
+  const compact = generateCompactIOCs(input);
+  assert(!compact.versioned['__proto__'], '__proto__ should be skipped in versioned');
+  assert(compact.wildcards.includes('normal-pkg'), 'normal-pkg should be in wildcards');
+});
+
+// ============================================
+// BOOTSTRAP COVERAGE TESTS
+// ============================================
+
+console.log('\n=== BOOTSTRAP COVERAGE TESTS ===\n');
+
+const { isAllowedRedirect: bootstrapIsAllowedRedirect, ensureIOCs: bootstrapEnsureIOCs, downloadAndDecompress, IOCS_PATH: BOOTSTRAP_IOCS_PATH, HOME_DATA_DIR: BOOTSTRAP_HOME_DATA_DIR, MIN_IOCS_SIZE: BOOTSTRAP_MIN_IOCS_SIZE, _resetEnsureIocsForTests: bootstrapReset } = require('../../src/ioc/bootstrap.js');
+
+test('BOOTSTRAP-COV: isAllowedRedirect allows github.com', () => {
+  assert(bootstrapIsAllowedRedirect('https://github.com/some/path') === true, 'github.com should be allowed');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect allows objects.githubusercontent.com', () => {
+  assert(bootstrapIsAllowedRedirect('https://objects.githubusercontent.com/some/path') === true, 'objects.githubusercontent.com should be allowed');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect allows release-assets.githubusercontent.com', () => {
+  assert(bootstrapIsAllowedRedirect('https://release-assets.githubusercontent.com/some/path') === true, 'release-assets.githubusercontent.com should be allowed');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect blocks HTTP protocol', () => {
+  assert(bootstrapIsAllowedRedirect('http://github.com/path') === false, 'HTTP should be blocked');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect blocks unknown domain', () => {
+  assert(bootstrapIsAllowedRedirect('https://evil.com/path') === false, 'Unknown domain should be blocked');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect blocks invalid URL', () => {
+  assert(bootstrapIsAllowedRedirect('not-a-url') === false, 'Invalid URL should be blocked');
+});
+
+test('BOOTSTRAP-COV: isAllowedRedirect blocks empty string', () => {
+  assert(bootstrapIsAllowedRedirect('') === false, 'Empty string should be blocked');
+});
+
+await asyncTest('BOOTSTRAP-COV: ensureIOCs returns true when IOC file exists and is large enough', async () => {
+  bootstrapReset();
+  const origExists = fs.existsSync;
+  const origStat = fs.statSync;
+  fs.existsSync = (p) => {
+    if (p === BOOTSTRAP_HOME_DATA_DIR) return true;
+    if (p === BOOTSTRAP_IOCS_PATH) return true;
+    return origExists(p);
+  };
+  fs.statSync = (p) => {
+    if (p === BOOTSTRAP_IOCS_PATH) return { size: 10_000_000 }; // 10MB > MIN_IOCS_SIZE
+    return origStat(p);
+  };
+  try {
+    const result = await bootstrapEnsureIOCs();
+    assert(result === true, 'Should return true when IOCs exist');
+  } finally {
+    fs.existsSync = origExists;
+    fs.statSync = origStat;
+  }
+});
+
+await asyncTest('BOOTSTRAP-COV: ensureIOCs handles download failure gracefully', async () => {
+  bootstrapReset();
+  const origExists = fs.existsSync;
+  const origStderr = process.stderr.write;
+  const stderrOutput = [];
+  // Mock https.get to simulate network failure (never hit real network in tests)
+  const https = require('https');
+  const origHttpsGet = https.get;
+  const BUNDLED_IOCS = path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs.json');
+  fs.existsSync = (p) => {
+    if (p === BOOTSTRAP_HOME_DATA_DIR) return true;
+    if (p === BOOTSTRAP_IOCS_PATH) return false; // IOCs don't exist
+    if (p === BUNDLED_IOCS) return false; // bundled IOCs also absent — force download path
+    return origExists(p);
+  };
+  process.stderr.write = (msg) => { stderrOutput.push(msg); };
+  https.get = (_url, _opts, _cb) => {
+    const EventEmitter = require('events');
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    process.nextTick(() => req.emit('error', new Error('mocked network failure')));
+    return req;
+  };
+  try {
+    const result = await bootstrapEnsureIOCs();
+    assert(result === false, 'Should return false when download fails');
+  } finally {
+    fs.existsSync = origExists;
+    process.stderr.write = origStderr;
+    https.get = origHttpsGet;
+  }
+});
+
+// (removed) 'BOOTSTRAP-COV: downloadAndDecompress rejects on invalid URL' — strictly weaker
+// duplicate of 'BOOTSTRAP-COV: downloadAndDecompress rejects on connection error' above,
+// which pins the propagated ECONNREFUSED message instead of just `instanceof Error`.
+
+// ============================================
+// UPDATER COVERAGE TESTS
+// ============================================
+
+console.log('\n=== UPDATER COVERAGE TESTS ===\n');
+
+test('UPDATER-COV: generateCompactIOCs handles severity overrides', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'pkg1', version: '*', severity: 'critical' },
+      { name: 'pkg2', version: '1.0', severity: 'high' },
+      { name: 'pkg3', version: '2.0', severity: 'medium' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  assert(compact.wildcards.includes('pkg1'), 'pkg1 should be in wildcards');
+  assert(compact.versioned['pkg2'] !== undefined, 'pkg2 should be in versioned');
+  assert(compact.severityOverrides['pkg2'] !== undefined, 'pkg2 should have severity override');
+  assert(compact.severityOverrides['pkg2']['1.0'] === 'high', 'pkg2 1.0 should be high');
+  assert(compact.severityOverrides['pkg3'] !== undefined, 'pkg3 should have severity override');
+  assert(compact.severityOverrides['pkg3']['2.0'] === 'medium', 'pkg3 2.0 should be medium');
+  // critical severity should NOT appear in overrides (it's the default)
+  assert(!compact.severityOverrides['pkg1'], 'pkg1 (critical) should not have severity override');
+});
+
+test('UPDATER-COV: generateCompactIOCs handles PyPI packages', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [],
+    pypi_packages: [
+      { name: 'py-evil', version: '*' },
+      { name: 'py-bad', version: '1.0' }
+    ]
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  assert(compact.pypi_wildcards.includes('py-evil'), 'Should have pypi wildcard');
+  assert(compact.pypi_versioned['py-bad'] !== undefined, 'Should have pypi versioned');
+  assert(compact.pypi_versioned['py-bad'][0] === '1.0', 'Should have pypi version 1.0');
+});
+
+test('UPDATER-COV: generateCompactIOCs skips dangerous keys in severity overrides', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: '__proto__', version: '1.0', severity: 'high' },
+      { name: 'constructor', version: '2.0', severity: 'medium' },
+      { name: 'prototype', version: '3.0', severity: 'high' },
+      { name: 'safe-pkg', version: '1.0', severity: 'high' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  // __proto__, constructor, prototype should be skipped from severity_overrides
+  assert(!compact.severityOverrides || !compact.severityOverrides['__proto__'], 'Should skip __proto__ in severity overrides');
+  assert(!compact.severityOverrides || !compact.severityOverrides['constructor'], 'Should skip constructor in severity overrides');
+  assert(!compact.severityOverrides || !compact.severityOverrides['prototype'], 'Should skip prototype in severity overrides');
+  // safe-pkg should still have its override
+  assert(compact.severityOverrides['safe-pkg'] !== undefined, 'safe-pkg should have severity override');
+  assert(compact.severityOverrides['safe-pkg']['1.0'] === 'high', 'safe-pkg 1.0 should be high');
+});
+
+test('UPDATER-COV: generateCompactIOCs skips dangerous version keys too', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'some-pkg', version: '__proto__', severity: 'high' },
+      { name: 'other-pkg', version: 'constructor', severity: 'medium' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  // Packages with dangerous version keys should be skipped from severity_overrides
+  assert(!compact.severityOverrides || !compact.severityOverrides['some-pkg'], 'Should skip pkg with __proto__ version from severity overrides');
+  assert(!compact.severityOverrides || !compact.severityOverrides['other-pkg'], 'Should skip pkg with constructor version from severity overrides');
+});
+
+test('UPDATER-COV: loadCachedIOCs compact file fallback path', () => {
+  const { invalidateCache, loadCachedIOCs } = require('../../src/ioc/updater.js');
+  // Invalidate cache to force reload
+  invalidateCache();
+
+  const origExistsSync = fs.existsSync;
+  const origReadFileSync = fs.readFileSync;
+
+  // Mock fs to simulate: LOCAL_IOC_FILE does not exist, LOCAL_COMPACT_FILE exists with valid data
+  const LOCAL_IOC_FILE = path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs.json');
+  const LOCAL_COMPACT_FILE = path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs-compact.json');
+  const MOCK_COMPACT = JSON.stringify({
+    defaultSeverity: 'critical', wildcards: ['test-pkg'], versioned: {},
+    hashes: [], markers: [], files: [], pypi_wildcards: [], pypi_versioned: {},
+    updated: '2026-01-01T00:00:00.000Z', sources: ['test']
+  });
+
+  fs.existsSync = (p) => {
+    if (p === LOCAL_IOC_FILE) return false; // Force compact fallback
+    if (p === LOCAL_COMPACT_FILE) return true; // Simulate compact file present
+    return origExistsSync(p);
+  };
+  fs.readFileSync = (p, enc) => {
+    if (p === LOCAL_COMPACT_FILE) return MOCK_COMPACT;
+    return origReadFileSync(p, enc);
+  };
+
+  try {
+    const iocs = loadCachedIOCs();
+    assert(iocs.packagesMap instanceof Map, 'Should return packagesMap from compact fallback');
+    assert(iocs.wildcardPackages instanceof Set, 'Should return wildcardPackages from compact fallback');
+  } finally {
+    fs.existsSync = origExistsSync;
+    fs.readFileSync = origReadFileSync;
+    // Invalidate cache so mocked results don't affect other tests
+    invalidateCache();
+  }
+});
+
+test('UPDATER-COV: loadCachedIOCs handles compact file load error', () => {
+  const { invalidateCache, loadCachedIOCs } = require('../../src/ioc/updater.js');
+  invalidateCache();
+
+  const origExistsSync = fs.existsSync;
+  const origReadFileSync = fs.readFileSync;
+  const origLog = console.log;
+  const logs = [];
+
+  const LOCAL_IOC_FILE = path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs.json');
+  const LOCAL_COMPACT_FILE = path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs-compact.json');
+
+  fs.existsSync = (p) => {
+    if (p === LOCAL_IOC_FILE) return false; // Force compact fallback
+    if (p === LOCAL_COMPACT_FILE) return true; // Simulate compact file present on disk
+    return origExistsSync(p);
+  };
+  fs.readFileSync = (p, enc) => {
+    if (p === LOCAL_COMPACT_FILE) throw new Error('test compact read error');
+    return origReadFileSync(p, enc);
+  };
+  console.log = (msg) => logs.push(msg);
+
+  try {
+    const iocs = loadCachedIOCs();
+    assert(iocs.packagesMap instanceof Map, 'Should still return valid IOCs on compact error');
+    assert(logs.some(l => l.includes('Failed to load compact IOC database')), 'Should log compact load error');
+  } finally {
+    fs.existsSync = origExistsSync;
+    fs.readFileSync = origReadFileSync;
+    console.log = origLog;
+    invalidateCache();
+  }
+});
+
+test('UPDATER-COV: loadCachedIOCs handles cached IOC file load error', () => {
+  const { invalidateCache, loadCachedIOCs } = require('../../src/ioc/updater.js');
+  invalidateCache();
+
+  const origExistsSync = fs.existsSync;
+  const origReadFileSync = fs.readFileSync;
+  const origLog = console.log;
+  const logs = [];
+
+  const CACHE_IOC_FILE = path.join(os.homedir(), '.muaddib', 'data', 'iocs.json');
+
+  fs.existsSync = (p) => {
+    if (p === CACHE_IOC_FILE) return true; // Simulate cache file exists
+    return origExistsSync(p);
+  };
+  fs.readFileSync = (p, enc) => {
+    if (p === CACHE_IOC_FILE) throw new Error('test cache read error');
+    return origReadFileSync(p, enc);
+  };
+  console.log = (msg) => logs.push(msg);
+
+  try {
+    const iocs = loadCachedIOCs();
+    assert(iocs.packagesMap instanceof Map, 'Should still return valid IOCs on cache error');
+    assert(logs.some(l => l.includes('Failed to load cached IOCs')), 'Should log cached IOC load error');
+  } finally {
+    fs.existsSync = origExistsSync;
+    fs.readFileSync = origReadFileSync;
+    console.log = origLog;
+    invalidateCache();
+  }
+});
+
+// ============================================
+// IOC STALENESS TESTS
+// ============================================
+
+console.log('\n=== IOC STALENESS TESTS ===\n');
+
+test('STALENESS: checkIOCStaleness returns null for fresh files', () => {
+  const { checkIOCStaleness } = require('../../src/ioc/updater.js');
+  const os = require('os');
+  // checkIOCStaleness inspects the NEWEST mtime among 3 files. Mirror that
+  // logic in the test or it falsely fails when only the local compact is
+  // stale but the cached HOME copy has been refreshed by `muaddib update`.
+  const filesToCheck = [
+    path.join(os.homedir(), '.muaddib', 'data', 'iocs.json'),
+    path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs.json'),
+    path.join(__dirname, '..', '..', 'src', 'ioc', 'data', 'iocs-compact.json')
+  ];
+  let newestMtime = 0;
+  for (const f of filesToCheck) {
+    try {
+      const stat = fs.statSync(f);
+      if (stat.mtimeMs > newestMtime) newestMtime = stat.mtimeMs;
+    } catch { /* missing file — skip */ }
+  }
+  if (newestMtime === 0) {
+    // No IOC files at all → function should return null per its contract
+    assert(checkIOCStaleness(30) === null, 'No files should return null');
+    return;
+  }
+  const ageDays = (Date.now() - newestMtime) / (1000 * 60 * 60 * 24);
+  const result = checkIOCStaleness(30);
+  if (ageDays <= 30) {
+    assert(result === null, 'Fresh files should return null, got: ' + result);
+  } else {
+    assert(typeof result === 'string', 'Old files should return a warning string');
+    assert(result.includes('muaddib update'), 'Warning should suggest running muaddib update');
+  }
+});
+
+test('STALENESS: checkIOCStaleness returns warning for old files (mocked mtime — deterministic in CI)', () => {
+  const { checkIOCStaleness } = require('../../src/ioc/updater.js');
+  const origStatSync = fs.statSync;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  // Old files: newest mtime 45 days ago → must warn with the floored age
+  fs.statSync = () => ({ mtimeMs: Date.now() - 45 * DAY_MS });
+  try {
+    const result = checkIOCStaleness(30);
+    assert(typeof result === 'string', 'Should return a warning string for 45-day-old files, got ' + result);
+    assert(result.includes('45 days old'), 'Warning should carry the floored age (45), got: ' + result);
+    assert(result.includes('threshold: 30d'), 'Warning should mention the threshold, got: ' + result);
+    assert(result.includes('muaddib update'), 'Warning should suggest muaddib update');
+  } finally {
+    fs.statSync = origStatSync;
+  }
+  // Fresh files: newest mtime 1 day ago → no warning (negative case)
+  fs.statSync = () => ({ mtimeMs: Date.now() - 1 * DAY_MS });
+  try {
+    assert(checkIOCStaleness(30) === null, 'Fresh (1-day-old) files must not warn');
+  } finally {
+    fs.statSync = origStatSync;
+  }
+});
+
+test('STALENESS: checkIOCStaleness returns null when no IOC files exist', () => {
+  const { checkIOCStaleness } = require('../../src/ioc/updater.js');
+  const origStatSync = fs.statSync;
+  fs.statSync = (p) => { throw new Error('ENOENT'); };
+  try {
+    const result = checkIOCStaleness(30);
+    assert(result === null, 'Should return null when no IOC files exist');
+  } finally {
+    fs.statSync = origStatSync;
+  }
+});
+
+test('STALENESS: checkIOCStaleness is exported from updater', () => {
+  const updater = require('../../src/ioc/updater.js');
+  assert(typeof updater.checkIOCStaleness === 'function', 'checkIOCStaleness should be exported');
+});
+
+// --- NEVER_WILDCARD guard tests ---
+
+test('UPDATER: generateCompactIOCs blocks NEVER_WILDCARD packages from wildcards', () => {
+  const { generateCompactIOCs, NEVER_WILDCARD } = require('../../src/ioc/updater.js');
+  assert(NEVER_WILDCARD instanceof Set, 'NEVER_WILDCARD should be exported as a Set');
+  assert(NEVER_WILDCARD.has('event-stream'), 'NEVER_WILDCARD should contain event-stream');
+
+  const fullIOCs = {
+    packages: [
+      { name: 'event-stream', version: '*', severity: 'critical' },
+      { name: 'evil-typosquat', version: '*', severity: 'critical' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  assert(!compact.wildcards.includes('event-stream'), 'event-stream should be blocked from wildcards');
+  assert(compact.wildcards.includes('evil-typosquat'), 'evil-typosquat should be in wildcards');
+});
+
+test('UPDATER: generateCompactIOCs allows NEVER_WILDCARD versioned entries', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'event-stream', version: '3.3.6', severity: 'critical' },
+      { name: 'event-stream', version: '*', severity: 'critical' },
+      { name: 'ua-parser-js', version: '0.7.29', severity: 'critical' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  // event-stream wildcard blocked, but versioned entry should be present
+  assert(!compact.wildcards.includes('event-stream'), 'event-stream wildcard should be blocked');
+  assert(compact.versioned['event-stream'] !== undefined, 'event-stream should have versioned entries');
+  assert(compact.versioned['event-stream'].includes('3.3.6'), 'event-stream 3.3.6 should be in versioned');
+  // ua-parser-js versioned entry should also work
+  assert(compact.versioned['ua-parser-js'] !== undefined, 'ua-parser-js should have versioned entries');
+  assert(compact.versioned['ua-parser-js'].includes('0.7.29'), 'ua-parser-js 0.7.29 should be in versioned');
+});
+
+test('UPDATER: generateCompactIOCs allows non-NEVER_WILDCARD wildcards', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'totally-evil-pkg', version: '*', severity: 'critical' },
+      { name: 'another-malware', version: '*', severity: 'critical' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  assert(compact.wildcards.includes('totally-evil-pkg'), 'Non-protected pkg should be in wildcards');
+  assert(compact.wildcards.includes('another-malware'), 'Non-protected pkg should be in wildcards');
+});
+
+// ============================================
+// COMMA-IN-VERSION SANITIZATION TESTS
+// ============================================
+
+test('UPDATER: generateCompactIOCs splits comma-in-version into individual entries', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'posthog-node', version: '4.18.1, 5.11.3, 5.13.3', severity: 'critical' },
+      { name: 'kill-port', version: '2.0.2, 2.0.3', severity: 'critical' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+
+  // posthog-node: comma-version should be split into 3 individual entries
+  const phVersions = compact.versioned['posthog-node'] || [];
+  assert(phVersions.includes('4.18.1'), 'posthog-node should have 4.18.1');
+  assert(phVersions.includes('5.11.3'), 'posthog-node should have 5.11.3');
+  assert(phVersions.includes('5.13.3'), 'posthog-node should have 5.13.3');
+  // Must NOT contain the concatenated string
+  for (const v of phVersions) {
+    assert(!v.includes(','), 'posthog-node version must not contain commas: ' + v);
+  }
+
+  // kill-port: same
+  const kpVersions = compact.versioned['kill-port'] || [];
+  assert(kpVersions.includes('2.0.2'), 'kill-port should have 2.0.2');
+  assert(kpVersions.includes('2.0.3'), 'kill-port should have 2.0.3');
+  for (const v of kpVersions) {
+    assert(!v.includes(','), 'kill-port version must not contain commas: ' + v);
+  }
+});
+
+test('UPDATER: expandCompactIOCs splits comma-in-version entries', () => {
+  const { expandCompactIOCs } = require('../../src/ioc/updater.js');
+  const compact = {
+    defaultSeverity: 'critical',
+    wildcards: [],
+    versioned: {
+      'posthog-node': ['4.18.1', '5.11.3, 5.13.3'],
+      'clean-pkg': ['1.0.0']
+    },
+    pypi_wildcards: [],
+    pypi_versioned: {},
+    hashes: [], markers: [], files: []
+  };
+  const expanded = expandCompactIOCs(compact);
+
+  const phEntries = expanded.packages.filter(p => p.name === 'posthog-node');
+  const phVersions = phEntries.map(p => p.version);
+  assert(phVersions.includes('4.18.1'), 'expand should have 4.18.1');
+  assert(phVersions.includes('5.11.3'), 'expand should have 5.11.3');
+  assert(phVersions.includes('5.13.3'), 'expand should have 5.13.3');
+  for (const v of phVersions) {
+    assert(!v.includes(','), 'expanded version must not contain commas: ' + v);
+  }
+
+  // clean-pkg should work normally
+  const cleanEntries = expanded.packages.filter(p => p.name === 'clean-pkg');
+  assert(cleanEntries.length === 1, 'clean-pkg should have 1 entry');
+  assert(cleanEntries[0].version === '1.0.0', 'clean-pkg version should be 1.0.0');
+});
+
+test('UPDATER: expandCompactIOCs enforces NEVER_WILDCARD guard', () => {
+  const { expandCompactIOCs, NEVER_WILDCARD } = require('../../src/ioc/updater.js');
+  const compact = {
+    defaultSeverity: 'critical',
+    wildcards: ['posthog-node', 'evil-pkg'],
+    versioned: { 'posthog-node': ['4.18.1'] },
+    pypi_wildcards: [],
+    pypi_versioned: {},
+    hashes: [], markers: [], files: []
+  };
+  const expanded = expandCompactIOCs(compact);
+
+  // posthog-node should NOT have a wildcard entry (NEVER_WILDCARD)
+  const phEntries = expanded.packages.filter(p => p.name === 'posthog-node');
+  const hasWildcard = phEntries.some(p => p.version === '*');
+  assert(!hasWildcard, 'posthog-node must not have wildcard entry after expand');
+  // But should have versioned entry
+  assert(phEntries.some(p => p.version === '4.18.1'), 'posthog-node should have 4.18.1');
+
+  // evil-pkg should still have its wildcard
+  const evilEntries = expanded.packages.filter(p => p.name === 'evil-pkg');
+  assert(evilEntries.some(p => p.version === '*'), 'evil-pkg should have wildcard');
+});
+
+test('UPDATER: createOptimizedIOCs splits comma-in-version and enforces NEVER_WILDCARD', () => {
+  const { createOptimizedIOCs, NEVER_WILDCARD } = require('../../src/ioc/updater.js');
+  const iocs = {
+    packages: [
+      { name: 'posthog-node', version: '4.18.1, 5.11.3, 5.13.3', source: 'test' },
+      { name: 'posthog-node', version: '*', source: 'test' },
+      { name: 'evil-pkg', version: '*', source: 'test' },
+      { name: 'another-pkg', version: '1.0.0, 2.0.0', source: 'test' }
+    ],
+    pypi_packages: []
+  };
+  const optimized = createOptimizedIOCs(iocs);
+
+  // posthog-node must NOT be in wildcardPackages
+  assert(!optimized.wildcardPackages.has('posthog-node'), 'posthog-node must not be wildcarded');
+
+  // posthog-node should have 3 individual versions from split + the * entry (but not wildcarded)
+  const phEntries = optimized.packagesMap.get('posthog-node');
+  assert(phEntries !== undefined, 'posthog-node should be in packagesMap');
+  const phVersions = phEntries.map(p => p.version);
+  assert(phVersions.includes('4.18.1'), 'should have 4.18.1');
+  assert(phVersions.includes('5.11.3'), 'should have 5.11.3');
+  assert(phVersions.includes('5.13.3'), 'should have 5.13.3');
+  for (const v of phVersions) {
+    assert(!v.includes(','), 'version must not contain commas: ' + v);
+  }
+
+  // evil-pkg should still be wildcarded
+  assert(optimized.wildcardPackages.has('evil-pkg'), 'evil-pkg should be wildcarded');
+
+  // another-pkg comma-version should be split
+  const anotherEntries = optimized.packagesMap.get('another-pkg');
+  assert(anotherEntries !== undefined, 'another-pkg should be in packagesMap');
+  const anotherVersions = anotherEntries.map(p => p.version);
+  assert(anotherVersions.includes('1.0.0'), 'should have 1.0.0');
+  assert(anotherVersions.includes('2.0.0'), 'should have 2.0.0');
+});
+
+test('UPDATER: loadCachedIOCs posthog-node is NOT wildcarded', () => {
+  const { loadCachedIOCs, invalidateCache, NEVER_WILDCARD } = require('../../src/ioc/updater.js');
+  invalidateCache();
+  const iocs = loadCachedIOCs();
+
+  // posthog-node must not be in wildcardPackages
+  assert(!iocs.wildcardPackages.has('posthog-node'), 'posthog-node must not be in wildcardPackages');
+  assert(!iocs.wildcardPackages.has('posthog-js'), 'posthog-js must not be in wildcardPackages');
+
+  // No NEVER_WILDCARD package should be in wildcardPackages
+  for (const name of NEVER_WILDCARD) {
+    assert(!iocs.wildcardPackages.has(name), name + ' (NEVER_WILDCARD) must not be in wildcardPackages');
+  }
+
+  // posthog-node@5.11.3 (compromised) should match
+  if (iocs.packagesMap.has('posthog-node')) {
+    const versions = iocs.packagesMap.get('posthog-node').map(p => p.version);
+    assert(versions.includes('5.11.3'), 'posthog-node@5.11.3 (compromised) should match');
+    assert(versions.includes('4.18.1'), 'posthog-node@4.18.1 (compromised) should match');
+    assert(versions.includes('5.13.3'), 'posthog-node@5.13.3 (compromised) should match');
+    // 5.28.4 (legitimate) should NOT match
+    assert(!versions.includes('5.28.4'), 'posthog-node@5.28.4 (legitimate) should NOT match');
+  }
+
+  // No comma-in-version entries should exist in packagesMap
+  let commaVersionCount = 0;
+  for (const [name, entries] of iocs.packagesMap) {
+    for (const e of entries) {
+      if (e.version && e.version.includes(',')) {
+        commaVersionCount++;
+      }
+    }
+  }
+  assert(commaVersionCount === 0, 'No comma-in-version entries should exist in packagesMap, found: ' + commaVersionCount);
+});
+
+// --- NEVER_WILDCARD_PYPI guard tests ---
+
+test('UPDATER: NEVER_WILDCARD_PYPI is exported and contains expected packages', () => {
+  const { NEVER_WILDCARD_PYPI } = require('../../src/ioc/updater.js');
+  assert(NEVER_WILDCARD_PYPI instanceof Set, 'NEVER_WILDCARD_PYPI should be a Set');
+  const expected = ['flask', 'django', 'requests', 'numpy', 'pandas', 'scipy', 'tensorflow', 'torch', 'fastapi', 'uvicorn'];
+  for (const pkg of expected) {
+    assert(NEVER_WILDCARD_PYPI.has(pkg), pkg + ' should be in NEVER_WILDCARD_PYPI');
+  }
+});
+
+test('UPDATER: generateCompactIOCs blocks NEVER_WILDCARD_PYPI from pypi_wildcards', () => {
+  const { generateCompactIOCs, NEVER_WILDCARD_PYPI } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [],
+    pypi_packages: [
+      { name: 'flask', version: '*', source: 'test' },
+      { name: 'flask', version: '2.3.1', source: 'test' },
+      { name: 'evil-pypi', version: '*', source: 'test' }
+    ],
+    hashes: [], markers: [], files: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  assert(!compact.pypi_wildcards.includes('flask'), 'flask must not be in pypi_wildcards');
+  assert(compact.pypi_wildcards.includes('evil-pypi'), 'evil-pypi should be in pypi_wildcards');
+  assert(compact.pypi_versioned['flask'] && compact.pypi_versioned['flask'].includes('2.3.1'), 'flask@2.3.1 should be in pypi_versioned');
+});
+
+test('UPDATER: expandCompactIOCs enforces NEVER_WILDCARD_PYPI guard', () => {
+  const { expandCompactIOCs, NEVER_WILDCARD_PYPI } = require('../../src/ioc/updater.js');
+  const compact = {
+    defaultSeverity: 'critical',
+    wildcards: [],
+    versioned: {},
+    pypi_wildcards: ['numpy', 'evil-pypi'],
+    pypi_versioned: { 'numpy': ['1.24.0'] },
+    hashes: [], markers: [], files: []
+  };
+  const expanded = expandCompactIOCs(compact);
+  const numpyEntries = expanded.pypi_packages.filter(p => p.name === 'numpy');
+  const hasWildcard = numpyEntries.some(p => p.version === '*');
+  assert(!hasWildcard, 'numpy must not have wildcard entry after expand');
+  assert(numpyEntries.some(p => p.version === '1.24.0'), 'numpy should have versioned entry 1.24.0');
+  const evilEntries = expanded.pypi_packages.filter(p => p.name === 'evil-pypi');
+  assert(evilEntries.some(p => p.version === '*'), 'evil-pypi should have wildcard');
+});
+
+test('UPDATER: createOptimizedIOCs enforces NEVER_WILDCARD_PYPI on pypi_packages', () => {
+  const { createOptimizedIOCs, NEVER_WILDCARD_PYPI } = require('../../src/ioc/updater.js');
+  const iocs = {
+    packages: [],
+    pypi_packages: [
+      { name: 'django', version: '*', source: 'test' },
+      { name: 'django', version: '4.2.1', source: 'test' },
+      { name: 'requests', version: '2.31.0, 2.32.0', source: 'test' },
+      { name: 'evil-pypi', version: '*', source: 'test' }
+    ]
+  };
+  const optimized = createOptimizedIOCs(iocs);
+  assert(!optimized.pypiWildcardPackages.has('django'), 'django must not be in pypiWildcardPackages');
+  assert(!optimized.pypiWildcardPackages.has('requests'), 'requests must not be in pypiWildcardPackages');
+  assert(optimized.pypiWildcardPackages.has('evil-pypi'), 'evil-pypi should be in pypiWildcardPackages');
+  const djangoEntries = optimized.pypiPackagesMap.get('django');
+  assert(djangoEntries !== undefined, 'django should be in pypiPackagesMap');
+  const djangoVersions = djangoEntries.map(p => p.version);
+  assert(djangoVersions.includes('4.2.1'), 'django@4.2.1 should be present');
+});
+
+test('UPDATER: generateCompactIOCs deduplicates split comma versions', () => {
+  const { generateCompactIOCs } = require('../../src/ioc/updater.js');
+  const fullIOCs = {
+    packages: [
+      { name: 'posthog-node', version: '4.18.1', severity: 'critical' },
+      { name: 'posthog-node', version: '5.11.3', severity: 'critical' },
+      { name: 'posthog-node', version: '4.18.1, 5.11.3', severity: 'critical' }
+    ],
+    pypi_packages: []
+  };
+  const compact = generateCompactIOCs(fullIOCs);
+  const versions = compact.versioned['posthog-node'] || [];
+  // 4.18.1 and 5.11.3 should appear only once each (no duplicates from split)
+  const count418 = versions.filter(v => v === '4.18.1').length;
+  const count511 = versions.filter(v => v === '5.11.3').length;
+  assert(count418 === 1, '4.18.1 should appear exactly once, got: ' + count418);
+  assert(count511 === 1, '5.11.3 should appear exactly once, got: ' + count511);
+});
+
+// ============================================
+// LEAN IOC PROJECTION (C2 RSS fix)
+// ============================================
+console.log('\n=== LEAN IOC TESTS ===\n');
+
+test('LEAN: createLeanIOCs keeps only matcher/alert fields, drops enrichment', () => {
+  const { createLeanIOCs } = require('../../src/ioc/updater.js');
+  const full = {
+    packages: [{
+      name: 'lodahs', version: '*', severity: 'critical', source: 'osv-malicious',
+      id: 'MAL-1', confidence: 'high', description: 'x'.repeat(500), references: ['a', 'b'],
+      mitre: 'T1195.002', published: '2025-08-14', freshness: { added_at: 'z' }, sources: [{ name: 'n' }]
+    }],
+    pypi_packages: [{ name: 'q', version: '1.0', severity: 'high', source: 'osm', description: 'y'.repeat(900) }],
+    hashes: ['h1'], markers: ['m1'], files: ['f1'],
+    stringIocs: [{ string: 's', campaign: 'c', severity: 'high', description: 'd' }],
+    updated: 't', sources: { a: 1 }
+  };
+  const lean = createLeanIOCs(full);
+  // npm entry projected to exactly the four read fields
+  assert(Object.keys(lean.packages[0]).sort().join(',') === 'name,severity,source,version',
+    'npm entry must keep only {name,version,severity,source}, got: ' + Object.keys(lean.packages[0]).join(','));
+  assert(lean.packages[0].name === 'lodahs' && lean.packages[0].source === 'osv-malicious', 'values preserved');
+  for (const dropped of ['id', 'description', 'references', 'mitre', 'published', 'freshness', 'sources', 'confidence']) {
+    assert(!(dropped in lean.packages[0]), `enrichment field '${dropped}' must be dropped`);
+  }
+  // pypi projected the same way
+  assert(lean.pypi_packages.length === 1 && !('description' in lean.pypi_packages[0]), 'pypi entry projected + enrichment dropped');
+  // simple/small collections preserved verbatim
+  assert(lean.hashes.length === 1 && lean.markers.length === 1 && lean.files.length === 1, 'hashes/markers/files preserved');
+  assert(lean.stringIocs.length === 1 && lean.stringIocs[0].description === 'd', 'stringIocs preserved verbatim (alert needs them)');
+  assert(lean.updated === 't' && lean.sources.a === 1, 'updated/sources metadata preserved');
+  // the projection must actually be smaller
+  assert(JSON.stringify(lean).length < JSON.stringify(full).length, 'lean must be smaller than full');
+});
+
+test('LEAN: createLeanIOCs is robust to missing collections', () => {
+  const { createLeanIOCs } = require('../../src/ioc/updater.js');
+  const lean = createLeanIOCs({ packages: [{ name: 'p', version: '*', severity: 'high' }] });
+  assert(lean.pypi_packages.length === 0 && lean.hashes.length === 0 && lean.stringIocs.length === 0, 'absent collections default to []');
+  assert(lean.packages[0].source === undefined, 'missing source stays undefined (no throw)');
+});
+
+test('LEAN: lean entries merge into the matcher exactly like full entries', () => {
+  const { createLeanIOCs, createOptimizedIOCs } = require('../../src/ioc/updater.js');
+  // a lean projection must still produce a working packagesMap / wildcard set
+  const lean = createLeanIOCs({ packages: [{ name: 'evilpkg', version: '*', severity: 'critical', source: 's' }] });
+  const opt = createOptimizedIOCs(lean);
+  assert(opt.packagesMap.get('evilpkg'), 'lean entry indexed in packagesMap');
+  assert(opt.wildcardPackages.has('evilpkg'), 'lean wildcard entry indexed in wildcardPackages');
+});
+
+test('LEAN: ensureLeanIOCFile / writeLeanIOCFile are exported functions', () => {
+  const u = require('../../src/ioc/updater.js');
+  assert(typeof u.ensureLeanIOCFile === 'function', 'ensureLeanIOCFile exported');
+  assert(typeof u.writeLeanIOCFile === 'function', 'writeLeanIOCFile exported');
+  assert(typeof u.LOCAL_LEAN_FILE === 'string' && u.LOCAL_LEAN_FILE.endsWith('iocs-lean.json'), 'LOCAL_LEAN_FILE exported');
+});
+
+}
+
+module.exports = { runUpdaterTests };

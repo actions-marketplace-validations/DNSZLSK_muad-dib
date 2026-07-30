@@ -1,20 +1,68 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const fs = require('fs');
 const path = require('path');
+const { getMaxFileSize, clearASTCache } = require('./shared/constants.js');
 
 /**
  * Directories excluded from scanning.
- * Only skip dependency/VCS/cache dirs - never skip user source code.
+ * Skips dependency/VCS/cache dirs and bundled output (dist/build/out).
+ * Bundled output is minified, huge, and produces FPs without security value.
+ *
+ * Per-scanner deviations are intentional (do NOT unify blindly — each is FPR-gated):
+ *  - obfuscation.js OBF_EXCLUDED_DIRS: also excludes dist/build/out but does NOT exclude
+ *    node_modules (it deliberately scans dependencies for obfuscation).
+ *  - binary-source.js / shell.js / anti-scanner-injection.js: deliberately DO scan dist/
+ *    (bundled payloads — jscrambler dist/intro.js gap, revshells in bundles, Hades directive
+ *    atop a bundle).
+ *  - paranoid.js: opt-in maximal coverage, scans dist/build/out and .json/.sh.
  */
-const EXCLUDED_DIRS = ['node_modules', '.git', '.muaddib-cache'];
+const EXCLUDED_DIRS = ['node_modules', '.git', '.muaddib-cache', 'dist', 'build', 'out', 'output'];
 
 /**
  * Extra directories to exclude (set at runtime via --exclude flag).
  * Merged into every findFiles() call on top of the caller's excludedDirs.
  */
 let _extraExcludedDirs = [];
+let _scanRoot = '';
 
-function setExtraExcludes(dirs) {
+/**
+ * Memoization cache for findFiles(). Key = dir|extensions|excludedDirs.
+ * Cleared between scans via clearFileListCache().
+ */
+const _fileListCache = new Map();
+let _filesCapped = false;
+let _overflowFiles = [];
+
+/**
+ * File content cache — read each file once, reused across all scanners in a single scan.
+ * Key = absolute file path, Value = file content string.
+ * Cleared between scans via clearFileListCache().
+ * Capped at 500 entries to prevent OOM during evaluate (200 packages sequential).
+ */
+const _fileContentCache = new Map();
+const _FILE_CONTENT_CACHE_MAX = 500;
+
+function setExtraExcludes(dirs, scanRoot) {
   _extraExcludedDirs = Array.isArray(dirs) ? dirs : [];
+  _scanRoot = scanRoot || '';
 }
 
 function getExtraExcludes() {
@@ -25,8 +73,6 @@ function getExtraExcludes() {
  * Patterns to identify dev/test files
  */
 const DEV_PATTERNS = [
-  /^scripts\//,
-  /^bin\//,
   /^tools\//,
   /^build\//,
   /^fixtures\//,
@@ -53,12 +99,20 @@ function isDevFile(relativePath) {
 }
 
 /**
+ * Maximum number of files to scan per package.
+ * Malware packages rarely have >50 JS files; 500 is a generous safety margin.
+ * Prevents large SDKs (1000+ files) from monopolizing scan time.
+ */
+const MAX_SCAN_FILES = 500;
+
+/**
  * Generic recursive file finder with symlink protection and depth limit.
  * @param {string} dir - Starting directory
  * @param {object} [options] - Options
  * @param {string[]} [options.extensions=['.js']] - File extensions to match
  * @param {string[]} [options.excludedDirs=EXCLUDED_DIRS] - Dirs to skip
  * @param {number} [options.maxDepth=100] - Max recursion depth
+ * @param {number} [options.maxFiles=MAX_SCAN_FILES] - Max files to return (0=unlimited)
  * @param {string[]} [options.results=[]] - Accumulator (internal)
  * @param {Set} [options.visitedInodes=new Set()] - Symlink loop detection (note: inode tracking
  *   is unreliable on Windows where stat.ino may be 0; maxDepth serves as fallback protection)
@@ -70,11 +124,44 @@ function findFiles(dir, options = {}) {
     extensions = ['.js'],
     excludedDirs = EXCLUDED_DIRS,
     maxDepth = 100,
+    maxFiles = MAX_SCAN_FILES,
     results = [],
     visitedInodes = new Set(),
+    visitedPaths = new Set(),
     depth = 0
   } = options;
 
+  // Top-level memoization: identical (dir, extensions, excludedDirs) → cached result
+  if (depth === 0) {
+    const cacheKey = dir + '|' + extensions.slice().sort().join(',') + '|' +
+      [...excludedDirs, ..._extraExcludedDirs].sort().join(',');
+    const cached = _fileListCache.get(cacheKey);
+    if (cached) return [...cached]; // return copy to prevent mutation
+    const result = _findFilesImpl(dir, { extensions, excludedDirs, maxDepth, results, visitedInodes, visitedPaths, depth });
+
+    // Apply file count cap: sort by depth (shallowest first) so root-level files
+    // (most likely to contain malicious entry points) are prioritized.
+    if (maxFiles > 0 && result.length > maxFiles) {
+      result.sort((a, b) => {
+        const depthA = a.split(path.sep).length;
+        const depthB = b.split(path.sep).length;
+        return depthA - depthB;
+      });
+      const capped = result.slice(0, maxFiles);
+      _overflowFiles = result.slice(maxFiles);
+      _fileListCache.set(cacheKey, [...capped]);
+      _filesCapped = true;
+      return capped;
+    }
+
+    _fileListCache.set(cacheKey, [...result]);
+    return result;
+  }
+
+  return _findFilesImpl(dir, { extensions, excludedDirs, maxDepth, results, visitedInodes, visitedPaths, depth });
+}
+
+function _findFilesImpl(dir, { extensions, excludedDirs, maxDepth, results, visitedInodes, visitedPaths, depth }) {
   if (depth > maxDepth) return results;
   if (!fs.existsSync(dir)) return results;
 
@@ -91,9 +178,14 @@ function findFiles(dir, options = {}) {
   }
 
   for (const item of items) {
-    if (allExcludedDirs.includes(item)) continue;
-
     const fullPath = path.join(dir, item);
+
+    // Check both bare name ("tests") and relative path ("src/scanner")
+    if (allExcludedDirs.includes(item)) continue;
+    if (_extraExcludedDirs.length > 0 && _scanRoot) {
+      const rel = path.relative(_scanRoot, fullPath).replace(/\\/g, '/');
+      if (_extraExcludedDirs.some(ex => rel === ex || rel.startsWith(ex + '/'))) continue;
+    }
 
     try {
       const lstat = fs.lstatSync(fullPath);
@@ -103,10 +195,16 @@ function findFiles(dir, options = {}) {
         try {
           const realPath = fs.realpathSync(fullPath);
           const realStat = fs.statSync(realPath);
-          if (realStat.ino !== 0 && visitedInodes.has(realStat.ino)) continue;
-          if (realStat.ino !== 0) visitedInodes.add(realStat.ino);
+          if (realStat.ino !== 0) {
+            if (visitedInodes.has(realStat.ino)) continue;
+            visitedInodes.add(realStat.ino);
+          } else {
+            // Windows ino=0 fallback: use resolved path for cycle detection
+            if (visitedPaths.has(realPath)) continue;
+            visitedPaths.add(realPath);
+          }
           if (realStat.isDirectory()) {
-            findFiles(realPath, { extensions, excludedDirs, maxDepth, results, visitedInodes, depth: depth + 1 });
+            _findFilesImpl(realPath, { extensions, excludedDirs, maxDepth, results, visitedInodes, visitedPaths, depth: depth + 1 });
           } else if (extensions.some(ext => item.endsWith(ext))) {
             results.push(realPath);
           }
@@ -116,10 +214,19 @@ function findFiles(dir, options = {}) {
         continue;
       }
 
-      if (lstat.ino !== 0) visitedInodes.add(lstat.ino);
+      if (lstat.ino !== 0) {
+        visitedInodes.add(lstat.ino);
+      } else {
+        // Windows ino=0 fallback: use resolved path for cycle detection
+        const resolvedPath = path.resolve(fullPath);
+        if (lstat.isDirectory()) {
+          if (visitedPaths.has(resolvedPath)) continue;
+          visitedPaths.add(resolvedPath);
+        }
+      }
 
       if (lstat.isDirectory()) {
-        findFiles(fullPath, { extensions, excludedDirs, maxDepth, results, visitedInodes, depth: depth + 1 });
+        _findFilesImpl(fullPath, { extensions, excludedDirs, maxDepth, results, visitedInodes, visitedPaths, depth: depth + 1 });
       } else if (extensions.some(ext => item.endsWith(ext))) {
         results.push(fullPath);
       }
@@ -138,7 +245,31 @@ function findFiles(dir, options = {}) {
  * @returns {string[]} List of .js file paths
  */
 function findJsFiles(dir, results = []) {
-  return findFiles(dir, { extensions: ['.js'], results });
+  // .d.ts included: legitimate .d.ts files never contain require/exec/network calls,
+  // so any executable code in .d.ts is a high-confidence malicious payload hiding technique.
+  return findFiles(dir, { extensions: ['.js', '.mjs', '.cjs', '.d.ts'], results });
+}
+
+function clearFileListCache() {
+  _fileListCache.clear();
+  _fileContentCache.clear();
+  clearASTCache();
+  _filesCapped = false;
+  _overflowFiles = [];
+}
+
+// Test-only introspection: the _FILE_CONTENT_CACHE_MAX bound (Bounded resources
+// contract) is unobservable from outside, so its eviction was untestable.
+function _getFileContentCacheSize() {
+  return _fileContentCache.size;
+}
+
+function wasFilesCapped() {
+  return _filesCapped;
+}
+
+function getOverflowFiles() {
+  return _overflowFiles;
 }
 
 /**
@@ -166,7 +297,12 @@ function getCallName(node) {
     return node.callee.name;
   }
   if (node.callee.type === 'MemberExpression' && node.callee.property) {
-    return node.callee.property.name;
+    // Batch 2: handle bracket notation cp['exec']('cmd') — computed property with string literal
+    if (node.callee.computed && node.callee.property.type === 'Literal'
+        && typeof node.callee.property.value === 'string') {
+      return node.callee.property.value;
+    }
+    return node.callee.property.name || '';
   }
   return '';
 }
@@ -221,15 +357,149 @@ class Spinner {
   }
 }
 
+/**
+ * Iterates files with size guard and error handling.
+ * Calls callback(file, content) for each readable file under MAX_FILE_SIZE.
+ * File contents are cached in _fileContentCache for reuse across scanners.
+ */
+function forEachSafeFile(files, callback) {
+  for (const file of files) {
+    // Check content cache first
+    const cached = _fileContentCache.get(file);
+    if (cached !== undefined) {
+      callback(file, cached);
+      continue;
+    }
+
+    try {
+      const stat = fs.statSync(file);
+      if (stat.size > getMaxFileSize()) continue;
+    } catch { continue; }
+    let content;
+    try {
+      content = fs.readFileSync(file, 'utf8');
+    } catch { continue; }
+
+    // Cache for subsequent scanners (evict all if over cap to prevent OOM in evaluate loops)
+    if (_fileContentCache.size >= _FILE_CONTENT_CACHE_MAX) _fileContentCache.clear();
+    _fileContentCache.set(file, content);
+    callback(file, content);
+  }
+}
+
+/**
+ * Lists installed packages in node_modules (handles scoped packages).
+ * @param {string} targetPath - Root of the project
+ * @returns {string[]} Package names (e.g. ['express', '@babel/core'])
+ */
+function listInstalledPackages(targetPath) {
+  const nm = path.join(targetPath, 'node_modules');
+  if (!fs.existsSync(nm)) return [];
+  const names = [];
+  try {
+    for (const item of fs.readdirSync(nm)) {
+      if (item.startsWith('.')) continue;
+      const itemPath = path.join(nm, item);
+      try {
+        const stat = fs.lstatSync(itemPath);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+        if (item.startsWith('@')) {
+          for (const si of fs.readdirSync(itemPath)) {
+            const ss = fs.lstatSync(path.join(itemPath, si));
+            if (!ss.isSymbolicLink() && ss.isDirectory()) names.push(`${item}/${si}`);
+          }
+        } else {
+          names.push(item);
+        }
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* no node_modules readable */ }
+  return names;
+}
+
+/**
+ * Logs to stderr when MUADDIB_DEBUG is set. No-op otherwise.
+ */
+function debugLog(...args) {
+  if (process.env.MUADDIB_DEBUG) console.error('[DEBUG]', ...args);
+}
+
+// eslint-disable-next-line no-control-regex -- ESC (\x1b) is required to strip ANSI color sequences before measuring visible width
+const _ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Draws an aligned box-drawing banner around the given content line(s).
+ * Width auto-fits the widest VISIBLE line (ANSI stripped before measuring),
+ * so the right border is always straight — replacing the hand-padded boxes
+ * that drifted out of alignment. Returns the banner as a string (no leading or
+ * trailing blank lines — callers add spacing as needed).
+ *
+ * @param {string[]|string} lines - content line(s)
+ * @returns {string}
+ */
+function banner(lines) {
+  const content = Array.isArray(lines) ? lines : [String(lines)];
+  const visibleLen = (s) => String(s).replace(_ANSI_RE, '').length;
+  const PAD = 1; // spaces of padding on each side
+  const inner = content.reduce((max, l) => Math.max(max, visibleLen(l)), 0) + PAD * 2;
+  const top = '╔' + '═'.repeat(inner) + '╗';
+  const bottom = '╚' + '═'.repeat(inner) + '╝';
+  const body = content.map((l) => {
+    const trailing = inner - PAD - visibleLen(l);
+    return '║' + ' '.repeat(PAD) + l + ' '.repeat(Math.max(0, trailing)) + '║';
+  });
+  return [top, ...body, bottom].join('\n');
+}
+
+/**
+ * True when an error represents a user-initiated prompt cancellation — Ctrl-C
+ * inside an @inquirer/prompts prompt, which throws an ExitPromptError whose
+ * message contains "force closed the prompt with SIGINT". Lets the CLI exit
+ * cleanly (code 130) instead of dumping an [ERROR] line or a stack trace.
+ *
+ * @param {*} err
+ * @returns {boolean}
+ */
+function isPromptCancellation(err) {
+  if (!err) return false;
+  if (err.name === 'ExitPromptError') return true;
+  return /SIGINT|force closed the prompt/i.test(err.message || '');
+}
+
+/**
+ * Renders a fixed-width 20-cell [██░░] bar for a 0–100 risk score. Clamps and
+ * guards against undefined / NaN / out-of-range so the CLI never throws a
+ * RangeError from String.prototype.repeat on a malformed score.
+ *
+ * @param {number} score
+ * @returns {string} a 20-character bar
+ */
+function renderScoreBar(score) {
+  const s = Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 0;
+  const filled = Math.floor(s / 5);
+  return '█'.repeat(filled) + '░'.repeat(20 - filled);
+}
+
 module.exports = {
   EXCLUDED_DIRS,
+  MAX_SCAN_FILES,
   DEV_PATTERNS,
   isDevFile,
   findFiles,
   findJsFiles,
+  clearFileListCache,
+  _getFileContentCacheSize,
+  wasFilesCapped,
+  getOverflowFiles,
   escapeHtml,
   getCallName,
   Spinner,
   setExtraExcludes,
-  getExtraExcludes
+  getExtraExcludes,
+  forEachSafeFile,
+  listInstalledPackages,
+  debugLog,
+  banner,
+  isPromptCancellation,
+  renderScoreBar
 };

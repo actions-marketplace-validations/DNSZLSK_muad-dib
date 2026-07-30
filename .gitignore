@@ -1,10 +1,115 @@
-node_modules/
+# ============================================================================
+# MUAD'DIB .gitignore
+# Reconstituted 2026-04-11 after merge commit e8db15e accidentally emptied it.
+# Combines entries from 72626b8 (pre-merge) + post-audit additions (v2.10.74).
+# ============================================================================
+
+# --- Dependencies (node_modules must never be committed) ---
+# Slash-less on purpose: a trailing-slash pattern is directory-only and does NOT
+# ignore a *symlink* named node_modules. A stray `git add` of a self-referential
+# node_modules symlink (ELOOP) got re-tracked once (commit 07d45dc8) precisely
+# because `node_modules/` did not match it. Slash-less covers dir AND symlink.
+node_modules
+
+# --- Environment & secrets (SECURITY: never commit) ---
+.env
+.env.*
+# Exception: .env.example is the documented template (no real values).
+!.env.example
+
+# --- Build artifacts & output files ---
+*.tgz
+*.vsix
+package/
+.nyc_output/
 coverage/
-.muaddib-cache/
-*.log
+metrics/
 rapport.html
 results.sarif
+
+# --- Logs (with exception for one test fixture) ---
+*.log
+!tests/samples/gvisor/strace-sample.log
+
+# --- Cache directories ---
+.muaddib-cache/
 .claude/
-src/ioc/data/iocs.json
-src/ioc/data/iocs-compact.json
+
+# --- IOC data (large files, downloaded via `npm run update`) ---
+# src/ioc/data/iocs.json is 112 MB, iocs-compact.json is committed as a
+# separate ~5 MB file at the root. The large downloaded version stays local.
+src/ioc/data/
+iocs-compact.json
+iocs.json.gz
 nul
+
+# --- Local data files (large per-environment artifacts) ---
+# Covers data/auto-labels.json (101 MB), data/ml-training-*.jsonl, data/tarball-cache/,
+# data/daily-stats.json, data/detections.json, etc. Uses leading slash to restrict
+# the pattern to the top-level data/ directory only (src/ioc/data/ has its own rule).
+/data/
+
+# --- Datasets (training corpora, benchmark results) ---
+# Covers datasets/adversarial/, datasets/real-world/*.json, datasets/benign/, etc.
+/datasets/
+
+# --- ML retrain artifacts (training dumps — but auto-labeler Python code is tracked) ---
+ml-retrain/retrain-dataset.jsonl
+ml-retrain/*.jsonl
+ml-retrain/tarballs/
+
+# --- Monitor runtime artifacts ---
+# logs/ contains alert files and webhook buffers — production state, never committed.
+/logs/
+/backups/
+
+# --- Evaluation & session outputs (per-run local files) ---
+tmp-*
+evaluate-*.json
+evaluate-*.txt
+v267.txt
+v268.txt
+SESSION-LOG.md
+
+# --- Audit bypass samples (SECURITY: evasion techniques must not be public) ---
+# These samples demonstrate how an attacker would evade detection — publishing
+# them would hand a recipe to adversaries.
+tests/samples/audit-v3-bypasses/
+
+# --- Review queue artifacts (v2.10.74 forensic audit) ---
+# Contains tarballs + dumps from the VPS audit. May contain package contents
+# from third parties — keep local only.
+review-queue-export.tar.gz
+review-queue/
+
+# --- Local-only scripts (project pro dossier generator, throwaway helpers) ---
+.build_dossier.py
+
+# --- Local work artifacts (SECURITY + hygiene: keep `git add -A` safe) ---
+# Added 2026-07-11: dozens of per-session working dirs, patches, audit dumps and
+# snapshots were untracked, making a blind `git add -A` liable to sweep in gigabytes
+# of scan data (archive/) or half-finished patches. All local-only scratch.
+.venv/
+archive/
+.adjwork/
+.muaddib/
+.npm/
+.sec-review-*/
+.suite-data-snapshot/
+*.patch
+
+# --- Ephemeral dated reports / audit dumps / batch-scripts (throwaway) ---
+# ROOT-ANCHORED (leading /) on purpose: a bare `audit-*` / `security-review-*` would
+# shadow TRACKED paths (tests/audit-2026-05/, scripts/audit-archive.sh, the audit-*.test.js
+# suites) and hide any new file added under them. Anchoring restricts to the root-level
+# scratch. Kept trackable on purpose: analysis tooling (scripts/ml-*, ghsa-*, build-*),
+# the remediation spec, ml-retrain/model-trees-*, osv-reports/, docs/campaigns/.
+/security-review-*.md
+/audit-*
+/FPR-overnight-*
+/fp-analysis-*
+/livraison-*
+/npm-reports-*
+/strategic-positioning-*
+scripts/append-*
+scripts/auto-*

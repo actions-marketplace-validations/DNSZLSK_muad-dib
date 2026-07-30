@@ -1,0 +1,1293 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+const { execSync, execFileSync, spawn } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const {
+  generateCanaryTokens,
+  createCanaryEnvFile,
+  createCanaryNpmrc,
+  createCanaryAwsCredentials,
+  createCanarySshKey,
+  createCanaryGitconfig,
+  detectCanaryExfiltration,
+  detectCanaryInOutput
+} = require('../canary-tokens.js');
+
+const { NPM_PACKAGE_REGEX } = require('../shared/constants.js');
+const { analyzePreloadLog } = require('./analyzer.js');
+const { classifyDomain } = require('./network-allowlist.js');
+const { parseGvisorLogs, cleanupGvisorLogs } = require('./gvisor-parser.js');
+
+// ── Event-loop stall attribution for the sandbox's SYNCHRONOUS docker CLI calls ──
+// (2026-07-03) These execFileSync/execSync 'docker' calls run on the MAIN thread.
+// When dockerd/runsc is slow or a gVisor container is wedged, they can block the
+// daemon's memory-breaker loop (daemon.js) — the suspected source of the un-attributed
+// (`op:null`) multi-minute loop-stalls that precede the cgroup OOM kills. Breadcrumb
+// each one with the SAME beginOp/endOp mechanism as the extraction sites (queue.js) so
+// the next stall NAMES the docker op instead of guessing. Pure observability: no change
+// to args, timeouts, return values, or error paths. The require is GUARDED so the shared
+// sandbox module stays usable from the CLI one-shot (and any context without the monitor);
+// beginOp/endOp are cheap module-var writes that never throw and no-op when the lag
+// sampler isn't running.
+let _beginOp = () => null;
+let _endOp = () => {};
+try {
+  ({ beginOp: _beginOp, endOp: _endOp } = require('../monitor/event-loop-monitor.js'));
+} catch { /* monitor module unavailable (e.g. CLI) — breadcrumbs stay no-op */ }
+
+function dockerSync(label, meta, fn) {
+  const _crumb = _beginOp(`docker:${label}`, meta || null);
+  try { return fn(); } finally { _endOp(_crumb); }
+}
+
+// Same breadcrumb mechanism as dockerSync, for the SYNCHRONOUS post-container
+// result-handling that also runs on the main thread (the deferred sandbox worker is a
+// setInterval on the main loop — deferred-sandbox.js): JSON.parse of container stdout,
+// gVisor kernel-log parse/cleanup, preload-log analysis. Uninstrumented today, so a
+// multi-minute stall in any of them mis-attributes to the last docker:* crumb (the
+// docker:rm-leurre seen in data/loop-stalls.jsonl with durationMs << lagMs). Leaf-only:
+// the wrapped fn must NOT nest another beginOp/dockerSync (single-slot model).
+function syncStep(label, meta, fn) {
+  const _crumb = _beginOp(label, meta || null);
+  try { return fn(); } finally { _endOp(_crumb); }
+}
+
+const DOCKER_IMAGE = 'muaddib-sandbox';
+const CONTAINER_TIMEOUT = 120000; // 120 seconds
+const SINGLE_RUN_TIMEOUT = 90000; // 90 seconds per run in multi-run mode (gVisor ~30% I/O overhead)
+const WATCHDOG_GRACE_MS = 15000; // grace after a kill before force-resolving INCONCLUSIVE (anti-hang)
+
+// ── Sandbox concurrency limiter ──
+// Prevents Docker container saturation under load (main-path T1a/T1b/T2).
+// The deferred worker manages its own dedicated slot outside this semaphore.
+// Pattern: same semaphore as src/shared/http-limiter.js.
+const SANDBOX_CONCURRENCY_MAX = Math.max(1, parseInt(process.env.MUADDIB_SANDBOX_CONCURRENCY, 10) || 3);
+
+const _sandboxSemaphore = { active: 0, queue: [] };
+
+function acquireSandboxSlot() {
+  if (_sandboxSemaphore.active < SANDBOX_CONCURRENCY_MAX) {
+    _sandboxSemaphore.active++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    _sandboxSemaphore.queue.push(resolve);
+  });
+}
+
+/**
+ * Non-blocking slot acquisition. Returns true if slot acquired, false if all busy.
+ * Atomic: check + acquire in a single synchronous call — no race condition.
+ * Used by T1b/T2 to defer instead of blocking when slots are full.
+ */
+function tryAcquireSandboxSlot() {
+  if (_sandboxSemaphore.active < SANDBOX_CONCURRENCY_MAX) {
+    _sandboxSemaphore.active++;
+    return true;
+  }
+  return false;
+}
+
+function releaseSandboxSlot() {
+  if (_sandboxSemaphore.queue.length > 0) {
+    const next = _sandboxSemaphore.queue.shift();
+    next(); // Transfers slot to next waiter (active count stays the same)
+  } else {
+    _sandboxSemaphore.active--;
+  }
+}
+
+function resetSandboxLimiter() {
+  _sandboxSemaphore.active = 0;
+  _sandboxSemaphore.queue.length = 0;
+}
+
+function getSandboxSemaphore() {
+  return _sandboxSemaphore;
+}
+
+// ── Live container registry (OOM leak fix) ──
+// Tracks the docker container name of every in-flight sandbox run. Bounded by
+// SANDBOX_CONCURRENCY_MAX + the deferred slot, so it stays tiny. Lets the daemon's
+// memory circuit breaker force-reap orphaned containers under EMERGENCY pressure —
+// gVisor (runsc) sandboxes can survive a normal `docker kill`, and a wedged one is
+// the dominant off-heap leak. Truncating the in-memory queue does nothing for them.
+const _liveContainers = new Set();
+
+/**
+ * Force-remove every tracked sandbox container (best-effort). Returns the count
+ * a removal was attempted for. Called by daemon.js handleMemoryPressure() at
+ * EMERGENCY level.
+ */
+function killAllSandboxContainers() {
+  const names = Array.from(_liveContainers);
+  for (const name of names) {
+    try { dockerSync('rm', { container: name }, () => execFileSync('docker', ['rm', '-f', name], { stdio: 'pipe', timeout: 5000 })); } catch { /* already gone */ }
+    _liveContainers.delete(name);
+  }
+  if (names.length > 0) {
+    console.log(`[SANDBOX] killAllSandboxContainers: force-removed ${names.length} orphan container(s)`);
+  }
+  return names.length;
+}
+
+/**
+ * Standard INCONCLUSIVE sandbox result (score -1). A timed-out / aborted / killed
+ * run MUST map to INCONCLUSIVE — never to CLEAN — so a package that deliberately
+ * hangs to evade analysis is not relabelled benign downstream.
+ */
+function inconclusiveResult(detail, evidence) {
+  return {
+    score: -1,
+    severity: 'INCONCLUSIVE',
+    findings: [{ type: 'timeout', severity: 'MEDIUM', detail, evidence: evidence || detail }],
+    raw_report: null,
+    suspicious: false,
+    inconclusive: true
+  };
+}
+
+// Time offsets for multi-run sandbox execution (ms)
+const TIME_OFFSETS = [
+  { offset: 0, label: 'immediate' },
+  { offset: 259200000, label: '72h offset' },   // 72 hours
+  { offset: 604800000, label: '7d offset' }      // 7 days
+];
+
+// Domains excluded from network findings (false positives)
+const SAFE_DOMAINS = [
+  'registry.npmjs.org',
+  'github.com',
+  'objects.githubusercontent.com',
+  'api.github.com',
+  'raw.githubusercontent.com',
+  'codeload.github.com',
+  'npmjs.com',
+  'npmjs.org',
+  'yarnpkg.com',
+  'googleapis.com',
+  'cloudflare.com'
+];
+
+// IPs/ports excluded from connection findings (false positives)
+const SAFE_IPS = ['127.0.0.1'];
+const PROBE_PORTS = [65535]; // Node.js internal connectivity checks
+
+// Commands that are always suspicious in a sandbox
+const DANGEROUS_CMDS = ['curl', 'wget', 'nc', 'netcat', 'python', 'python3', 'bash', 'sh'];
+
+// Commands that are sandbox infrastructure — not spawned by the package
+const SAFE_SANDBOX_CMDS = new Set(['timeout', 'node', 'npm', 'npx', 'su', 'env']);
+
+// Static canary tokens injected by sandbox-runner.sh (fallback honeypots).
+// These are searched in the sandbox report as a complement to the dynamic
+// tokens from canary-tokens.js (which use random values per session).
+// Format-valid: match real service token formats to resist format-based detection.
+// ANSSI audit m4: replaced AWS doc examples with project-specific values.
+const STATIC_CANARY_TOKENS = {
+  GITHUB_TOKEN: 'ghp_mD9kX3pL7vR1wN5qT8yB2cF4hJ6sA0eU3iO9gK',
+  NPM_TOKEN: 'npm_7f3e8a2d1b9c4f6e0d5a7b3c8f1e2d4a9b6c0d5e',
+  AWS_ACCESS_KEY_ID: 'AKIAMDB7X9R2K4P1N5Q3',
+  AWS_SECRET_ACCESS_KEY: 'mDb8xR3kP7vN2qT5yW1cF9hJ4sA6eU0iO3gK7nL',
+  SLACK_WEBHOOK_URL: 'https://hooks.example.com/services/TCANARY/BCANARY/canary-slack-token',
+  DISCORD_WEBHOOK_URL: 'https://discord.com/api/webhooks/000000000000000000/abcdefghijklmnopqrstuvwxyz'
+};
+
+// Patterns indicating data exfiltration in HTTP bodies
+const EXFIL_PATTERNS = [
+  { pattern: /\bNPM_TOKEN\b/i, label: 'npm token', severity: 'CRITICAL' },
+  { pattern: /\bGITHUB_TOKEN\b/i, label: 'GitHub token', severity: 'CRITICAL' },
+  { pattern: /\bAWS_SECRET/i, label: 'AWS credentials', severity: 'CRITICAL' },
+  { pattern: /npmrc/i, label: '.npmrc content', severity: 'CRITICAL' },
+  { pattern: /\bssh-rsa\b|\bssh-ed25519\b/i, label: 'SSH key', severity: 'CRITICAL' },
+  { pattern: /BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY/, label: 'private key', severity: 'CRITICAL' },
+  { pattern: /\bpassword\b/i, label: 'password', severity: 'CRITICAL' },
+  { pattern: /\btoken\b/i, label: 'token', severity: 'CRITICAL' },
+  { pattern: /\/etc\/passwd/, label: 'passwd file', severity: 'HIGH' },
+  { pattern: /\.env\b/, label: '.env content', severity: 'HIGH' }
+];
+
+// ── Docker availability checks ──
+
+function isDockerAvailable() {
+  try {
+    dockerSync('info', null, () => execSync('docker info', { stdio: 'pipe', timeout: 10000 }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function imageExists() {
+  try {
+    dockerSync('image-inspect', null, () => execFileSync('docker', ['image', 'inspect', DOCKER_IMAGE], { stdio: 'pipe', timeout: 10000 }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── gVisor availability check ──
+
+let _gvisorAvailableCache;          // memoized host capability (runsc does not appear mid-process)
+let _sandboxRuntimeWarned = false;  // throttle the runtime warning/refusal log to once per process
+
+function isGvisorAvailable() {
+  if (_gvisorAvailableCache !== undefined) return _gvisorAvailableCache;
+  try {
+    const info = dockerSync('info', null, () => execSync('docker info', { encoding: 'utf8', stdio: 'pipe', timeout: 10000 }));
+    _gvisorAvailableCache = /\brunsc\b/.test(info);
+  } catch {
+    _gvisorAvailableCache = false;
+  }
+  return _gvisorAvailableCache;
+}
+
+// Pure runtime-selection decision (no I/O) — unit-testable without Docker, unlike
+// runSandbox() which early-returns before this point when Docker is absent.
+// Inputs: the env object + whether runsc is actually available (isGvisorAvailable()).
+// Returns { useGvisor, refuse, warn, reason }:
+//   - useGvisor: run under runsc (stronger isolation)
+//   - refuse:    caller MUST NOT run — gVisor was REQUIRED but runsc is unavailable
+//                (fail CLOSED, opt-in via MUADDIB_REQUIRE_GVISOR). Do not downgrade.
+//   - warn:      caller should emit a prominent isolation-downgrade WARNING because
+//                gVisor was requested, is unavailable, but was not required (fail OPEN).
+// Default (neither env var set) → runc, no warn, no refuse (unchanged behavior).
+// MUADDIB_REQUIRE_GVISOR implies wanting gVisor (you cannot require what you don't want).
+function resolveSandboxRuntime(env, gvisorAvailable) {
+  const wantGvisor = env.MUADDIB_SANDBOX_RUNTIME === 'gvisor';
+  const requireGvisor = env.MUADDIB_REQUIRE_GVISOR === '1' || env.MUADDIB_REQUIRE_GVISOR === 'true';
+  if (!wantGvisor && !requireGvisor) {
+    // gVisor not requested. If runsc IS available on this host, still warn: the operator
+    // installed gVisor but this scan is running on weaker runc (the exact VPS gap — runsc
+    // present, Docker default runtime is runc, env var never set). Detectable in prod.
+    if (gvisorAvailable) {
+      return { useGvisor: false, refuse: false, warn: true,
+        reason: 'sandbox running under runc although gVisor (runsc) IS available on this host — set MUADDIB_SANDBOX_RUNTIME=gvisor to use the stronger isolation' };
+    }
+    return { useGvisor: false, refuse: false, warn: false, reason: 'runc (default — gVisor neither requested nor available)' };
+  }
+  if (gvisorAvailable) {
+    return { useGvisor: true, refuse: false, warn: false, reason: 'gvisor (runsc)' };
+  }
+  if (requireGvisor) {
+    return { useGvisor: false, refuse: true, warn: false, reason: 'gVisor REQUIRED (MUADDIB_REQUIRE_GVISOR) but runsc is not available' };
+  }
+  return { useGvisor: false, refuse: false, warn: true, reason: 'gVisor requested but runsc unavailable — falling back to weaker runc isolation' };
+}
+
+// ── Build image (with cache) ──
+
+async function buildSandboxImage() {
+  if (!isDockerAvailable()) {
+    console.log('[SANDBOX] Docker is not installed or not running. Skipping sandbox analysis.');
+    return false;
+  }
+
+  if (imageExists()) {
+    console.log('[SANDBOX] Using cached Docker image.');
+    return true;
+  }
+
+  console.log('[SANDBOX] Building Docker image...');
+
+  return new Promise((resolve) => {
+    const dockerfilePath = path.join(__dirname, '..', '..', 'docker').replace(/\\/g, '/');
+    const proc = spawn('docker', ['build', '-t', DOCKER_IMAGE, dockerfilePath], {
+      stdio: 'inherit'
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log('[SANDBOX] Image built successfully.');
+        resolve(true);
+      } else {
+        console.log('[SANDBOX] Docker build failed.');
+        resolve(false);
+      }
+    });
+
+    proc.on('error', () => {
+      console.log('[SANDBOX] Docker error during build.');
+      resolve(false);
+    });
+  });
+}
+
+// ── Docker run argument construction ──
+
+// Build the `docker run` argument vector for a single sandbox execution. Pure: given the run
+// options it returns a string[] with no side effects (the canary helpers it calls are themselves
+// pure), so the isolation flags, the anti-detection hostname, the canary env injection, the gVisor
+// runtime, and the libfaketime/time-offset wiring are all behaviorally testable without spawning
+// Docker. Callers compute containerName + fakeHostname (the kill-ladder needs the former) and pass
+// them in. KEEP IN SYNC with sandbox-runner.sh (caps, tmpfs, env contract).
+function buildDockerArgs(opts = {}) {
+  const {
+    strict = false, canaryTokens = null, timeOffset = 0, gvisorMode = false,
+    containerName, fakeHostname, local = false, localAbsPath = null, packageName, mode
+  } = opts;
+
+  const dockerArgs = [
+    'run',
+    '--rm',
+    `--name=${containerName}`,
+    `--hostname=${fakeHostname}`,
+    '--network=bridge',
+    '--memory=512m',
+    '--cpus=1',
+    '--pids-limit=100',
+    '--cap-drop=ALL'
+  ];
+
+  // gVisor runtime: use runsc instead of default runc.
+  // Performance: configure --directfs and --overlay2=all:memory in daemon.json:
+  //   "runsc": { "path": "/usr/bin/runsc", "runtimeArgs": ["--directfs", "--overlay2=all:memory"] }
+  // --directfs: bypass gofer process for direct filesystem access (fewer RPCs, faster I/O)
+  // --overlay2=all:memory: sandbox writes go to tmpfs instead of host (faster, isolated)
+  // These flags require gVisor >= 2023-06-01.
+  if (gvisorMode) {
+    dockerArgs.push('--runtime=runsc');
+    dockerArgs.push('-e', 'MUADDIB_GVISOR=1');
+  }
+
+  // Inject canary tokens as environment variables
+  if (canaryTokens) {
+    for (const [key, value] of Object.entries(canaryTokens)) {
+      dockerArgs.push('-e', `${key}=${value}`);
+    }
+    // Also inject canary file contents as env vars for the entrypoint to write
+    dockerArgs.push('-e', `CANARY_ENV_CONTENT=${createCanaryEnvFile(canaryTokens).replace(/\r?\n/g, '\\n')}`);
+    dockerArgs.push('-e', `CANARY_NPMRC_CONTENT=${createCanaryNpmrc(canaryTokens).replace(/\r?\n/g, '\\n')}`);
+    dockerArgs.push('-e', `CANARY_AWS_CONTENT=${createCanaryAwsCredentials(canaryTokens).replace(/\r?\n/g, '\\n')}`);
+    dockerArgs.push('-e', `CANARY_SSH_KEY=${createCanarySshKey().replace(/\r?\n/g, '\\n')}`);
+    dockerArgs.push('-e', `CANARY_GITCONFIG=${createCanaryGitconfig().replace(/\r?\n/g, '\\n')}`);
+  }
+
+  // Inject time offset — libfaketime-aware (v2.10.7)
+  // Run 1 (offset=0): no libfaketime, preload.js handles JS-level only
+  // Runs 2+ (offset>0): libfaketime handles C-level time shift for ALL processes
+  //   (Node, Python, bash), preload.js TIME_OFFSET=0 to avoid double acceleration
+  const useFaketime = timeOffset > 0;
+  dockerArgs.push('-e', `NODE_TIMING_OFFSET=${useFaketime ? 0 : timeOffset}`);
+
+  if (useFaketime) {
+    const hours = Math.floor(timeOffset / 3600000);
+    const faketimeStr = hours >= 24
+      ? `+${Math.floor(hours / 24)}d x1000`
+      : `+${hours}h x1000`;
+    dockerArgs.push('-e', `MUADDIB_FAKETIME=${faketimeStr}`);
+    dockerArgs.push('-e', 'MUADDIB_FAKETIME_ACTIVE=1');
+  }
+
+  // Both modes need NET_RAW for tcpdump (runs as root in entrypoint).
+  // gVisor mode: no tcpdump needed — gVisor captures via --strace/--log-packets.
+  // Strict mode also needs NET_ADMIN for iptables network blocking.
+  // SYS_PTRACE is not needed: strace traces its own child (npm install via su).
+  // SETUID + SETGID required for su (privilege drop to sandboxuser).
+  // CHOWN required for chown in sandbox-runner.sh.
+  if (!gvisorMode) {
+    dockerArgs.push('--cap-add=NET_RAW');
+  }
+  dockerArgs.push('--cap-add=SETUID');
+  dockerArgs.push('--cap-add=SETGID');
+  dockerArgs.push('--cap-add=CHOWN');
+  if (strict) {
+    dockerArgs.push('--cap-add=NET_ADMIN');
+  }
+
+  dockerArgs.push('--tmpfs', '/tmp:rw,nosuid,size=64m');
+  dockerArgs.push('--tmpfs', '/sandbox/install:rw,nosuid,size=256m');
+  dockerArgs.push('--tmpfs', '/home/sandboxuser:rw,noexec,nosuid,size=16m');
+  dockerArgs.push('--read-only');
+
+  // /proc/uptime evasion (T1497.003) handled by preload.js monkey-patching
+  // (process.uptime, Date.now, performance.now, process.hrtime)
+
+  dockerArgs.push('--security-opt', 'no-new-privileges');
+
+  if (local && localAbsPath) {
+    dockerArgs.push('-v', `${localAbsPath}:/sandbox/local-pkg:ro`);
+  }
+
+  dockerArgs.push(DOCKER_IMAGE);
+  dockerArgs.push(local ? '/sandbox/local-pkg' : packageName);
+  dockerArgs.push(mode);
+
+  return dockerArgs;
+}
+
+// Realistic hostname to evade sandbox detection (T1497.001). The default Docker hostname is a
+// 12-char hex hash — trivially fingerprinted; we use a dev-laptop-XXXX shape with random hex.
+function generateFakeHostname() {
+  return `dev-laptop-${crypto.randomBytes(2).toString('hex')}`;
+}
+
+// ── Run single sandbox execution ──
+
+async function runSingleSandbox(packageName, options = {}) {
+  const cleanResult = { score: 0, severity: 'CLEAN', findings: [], raw_report: null, suspicious: false };
+
+  const strict = options.strict || false;
+  const canaryTokens = options.canaryTokens || null;
+  const local = options.local || false;
+  const localAbsPath = options.localAbsPath || null;
+  const displayName = options.displayName || packageName;
+  const mode = strict ? 'strict' : 'permissive';
+  const timeOffset = options.timeOffset || 0;
+  const runTimeout = options.runTimeout || CONTAINER_TIMEOUT;
+  const gvisorMode = options.gvisor || false;
+  const signal = options.signal || null;
+
+  return new Promise((_resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let timer = null;
+    let forceTimer = null;
+    const containerName = `npm-audit-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+    // Single-settle wrapper: every resolve(...) below routes through this, so
+    // cleanup (timers, abort listener, live-container registry) runs exactly once
+    // no matter which path finishes the run.
+    const resolve = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      if (signal) { try { signal.removeEventListener('abort', onAbort); } catch { /* not added */ } }
+      _liveContainers.delete(containerName);
+      _resolve(result);
+    };
+
+    // `docker kill` alone leaves the container record, and under gVisor the runsc
+    // sandbox can survive it — rm -f reaps both. --rm makes this a no-op on clean exit.
+    const killContainer = () => {
+      try { dockerSync('kill', { container: containerName }, () => execFileSync('docker', ['kill', containerName], { stdio: 'pipe', timeout: 5000 })); } catch { /* may be gone */ }
+      try { dockerSync('rm', { container: containerName }, () => execFileSync('docker', ['rm', '-f', containerName], { stdio: 'pipe', timeout: 5000 })); } catch { /* already removed */ }
+    };
+
+    // Kill + arm a watchdog that force-resolves INCONCLUSIVE if the docker client
+    // never emits 'close' after the kill (wedged runsc gofer / stdio held open by a
+    // grandchild — the multi-hour hang that leaked slots and off-heap memory).
+    const triggerKill = (reason) => {
+      if (settled) return;
+      timedOut = true;
+      console.log(`[SANDBOX] ${reason} — killing container ${containerName}...`);
+      try { killContainer(); } catch { /* best-effort */ }
+      if (!forceTimer) {
+        forceTimer = setTimeout(() => {
+          if (settled) return;
+          console.error(`[SANDBOX] Container ${containerName} did not exit after kill — force-resolving INCONCLUSIVE`);
+          try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+          resolve(inconclusiveResult(`Killed (${reason}) but process did not exit within grace`));
+        }, WATCHDOG_GRACE_MS);
+      }
+    };
+
+    const onAbort = () => triggerKill('Aborted by signal');
+
+    // Early abort: signal already tripped before we spawned anything.
+    if (signal && signal.aborted) {
+      resolve(inconclusiveResult('Aborted before launch'));
+      return;
+    }
+
+    const fakeHostname = generateFakeHostname();
+
+    const dockerArgs = buildDockerArgs({
+      strict, canaryTokens, timeOffset, gvisorMode,
+      containerName, fakeHostname, local, localAbsPath, packageName, mode
+    });
+
+    const proc = spawn('docker', dockerArgs);
+    _liveContainers.add(containerName);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    let gvisorContainerId = null;
+
+    // Timeout: kill container + arm anti-hang watchdog (see triggerKill).
+    timer = setTimeout(() => triggerKill(`Timeout (${runTimeout / 1000}s)`), runTimeout);
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+
+      // Capture container ID for gVisor log retrieval (once, while container is running)
+      if (gvisorMode && !gvisorContainerId) {
+        try {
+          gvisorContainerId = dockerSync('inspect', { container: containerName }, () => execFileSync('docker', ['inspect', '--format={{.Id}}', containerName], {
+            encoding: 'utf8', stdio: 'pipe', timeout: 5000
+          })).trim();
+        } catch { /* container not yet ready, will retry on next data event */ }
+      }
+
+      // Forward sandbox progress logs (sanitize ANSI escape sequences)
+      // eslint-disable-next-line no-control-regex -- ESC control byte required to match ANSI sequences
+      const text = data.toString().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      for (const line of text.split(/\r?\n/)) {
+        if (line.includes('[SANDBOX]')) {
+          console.log(line.trim());
+        }
+      }
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+
+      // TIMEOUT FIRST: docker kill causes non-zero exit (code 137/SIGKILL),
+      // must check before Docker error handler to avoid returning CLEAN on timeout
+      if (timedOut) {
+        const result = {
+          score: -1,
+          severity: 'INCONCLUSIVE',
+          findings: [{
+            type: 'timeout',
+            severity: 'MEDIUM',
+            detail: `Container exceeded ${runTimeout / 1000}s timeout — package too large or slow install`,
+            evidence: `Killed after ${runTimeout}ms`
+          }],
+          raw_report: null,
+          suspicious: false,
+          inconclusive: true
+        };
+        resolve(result);
+        return;
+      }
+
+      // Docker-level failure (non-timeout): log error and return clean result
+      if (code !== 0 && !stdout.includes('---MUADDIB-REPORT-START---')) {
+        const errLines = stderr.split(/\r?\n/).filter(l => l && !l.includes('[SANDBOX]'));
+        if (errLines.length > 0) {
+          console.log(`[SANDBOX] Docker error (exit ${code}): ${errLines[0]}`);
+        } else {
+          console.log(`[SANDBOX] Container exited with code ${code} (no output)`);
+        }
+        resolve(cleanResult);
+        return;
+      }
+
+      // Parse JSON from container stdout using delimiter
+      let report;
+      try {
+        const REPORT_DELIMITER = '---MUADDIB-REPORT-START---';
+        const delimIdx = stdout.lastIndexOf(REPORT_DELIMITER);
+        let jsonStr;
+        if (delimIdx !== -1) {
+          // Reliable: use delimiter to skip any package output before the report
+          jsonStr = stdout.substring(delimIdx + REPORT_DELIMITER.length).trim();
+        } else {
+          // Fallback: find first '{' (backward compat with older images)
+          const jsonStart = stdout.indexOf('{');
+          const jsonEnd = stdout.lastIndexOf('}');
+          if (jsonStart === -1 || jsonEnd === -1) {
+            throw new Error('No JSON found in output');
+          }
+          jsonStr = stdout.substring(jsonStart, jsonEnd + 1);
+        }
+        report = syncStep('sandbox:parse-report', { bytes: jsonStr.length }, () => JSON.parse(jsonStr));
+        if (local && report) {
+          report.package = displayName;
+        }
+      } catch (e) {
+        console.log('[SANDBOX] Failed to parse container output:', e.message);
+        // ── Debug: identify what corrupted the JSON report ──
+        const dbgDelim = stdout.lastIndexOf('---MUADDIB-REPORT-START---');
+        console.log(`[SANDBOX] DEBUG: stdout.length=${stdout.length}, delimiter_pos=${dbgDelim}`);
+        if (dbgDelim !== -1) {
+          const afterDelim = stdout.substring(dbgDelim);
+          // Show first 300 chars after delimiter (where JSON should start)
+          console.log('[SANDBOX] DEBUG after delimiter (first 300):', afterDelim.substring(0, 300));
+          // Show last 300 chars of stdout (where truncation happened)
+          console.log('[SANDBOX] DEBUG stdout tail (last 300):', stdout.substring(Math.max(0, stdout.length - 300)));
+          // Check for non-JSON content mixed in
+          const jsonPart = afterDelim.substring('---MUADDIB-REPORT-START---'.length).trim();
+          const firstBrace = jsonPart.indexOf('{');
+          if (firstBrace > 0) {
+            console.log('[SANDBOX] DEBUG garbage before JSON:', JSON.stringify(jsonPart.substring(0, firstBrace)));
+          }
+          const lastBrace = jsonPart.lastIndexOf('}');
+          if (lastBrace !== -1 && lastBrace < jsonPart.length - 1) {
+            console.log('[SANDBOX] DEBUG garbage after JSON:', JSON.stringify(jsonPart.substring(lastBrace + 1)));
+          }
+          if (lastBrace === -1) {
+            console.log('[SANDBOX] DEBUG no closing brace found — JSON truncated');
+          }
+        } else {
+          // No delimiter at all — show what's in stdout
+          console.log('[SANDBOX] DEBUG no delimiter found, stdout preview:', stdout.substring(0, 500));
+        }
+        resolve(cleanResult);
+        return;
+      }
+
+      // In gVisor mode, merge kernel-level strace data from gVisor debug logs.
+      // sandbox-runner.sh skips strace/tcpdump in gVisor mode, so file access,
+      // connections, and process data come from gVisor's kernel-level tracing.
+      if (gvisorMode && gvisorContainerId) {
+        const gvisorLogDir = process.env.MUADDIB_GVISOR_LOG_DIR || '/tmp/runsc';
+        const gvisorData = syncStep('sandbox:gvisor-parse', { container: gvisorContainerId }, () => parseGvisorLogs(gvisorContainerId, gvisorLogDir));
+
+        // Merge gVisor findings into report without duplicating
+        if (!report.sensitive_files) report.sensitive_files = { read: [], written: [] };
+        if (!report.network) report.network = {};
+        if (!report.processes) report.processes = { spawned: [] };
+
+        const existingReads = new Set(report.sensitive_files.read || []);
+        for (const f of gvisorData.sensitive_files.read) {
+          if (!existingReads.has(f)) report.sensitive_files.read.push(f);
+        }
+
+        const existingWrites = new Set(report.sensitive_files.written || []);
+        for (const f of gvisorData.sensitive_files.written) {
+          if (!existingWrites.has(f)) report.sensitive_files.written.push(f);
+        }
+
+        const existingConns = new Set((report.network.http_connections || []).map(c => `${c.host}:${c.port}`));
+        if (!report.network.http_connections) report.network.http_connections = [];
+        for (const c of gvisorData.network.http_connections) {
+          if (!existingConns.has(`${c.host}:${c.port}`)) report.network.http_connections.push(c);
+        }
+
+        const existingProcs = new Set((report.processes.spawned || []).map(p => p.command));
+        for (const p of gvisorData.processes.spawned) {
+          if (!existingProcs.has(p.command)) report.processes.spawned.push(p);
+        }
+
+        // Cleanup gVisor logs to prevent disk fill
+        syncStep('sandbox:gvisor-cleanup', { container: gvisorContainerId }, () => cleanupGvisorLogs(gvisorContainerId, gvisorLogDir));
+      }
+
+      const { score, findings } = scoreFindings(report);
+
+      // Analyze preload log for behavioral findings
+      if (report.preload_log) {
+        const preloadResult = syncStep('sandbox:preload-analyze', null, () => analyzePreloadLog(report.preload_log));
+        for (const finding of preloadResult.findings) {
+          findings.push(finding);
+        }
+        // Add preload score (capped at 100 with the rest)
+        report._preloadScore = preloadResult.score;
+      }
+
+      // Canary token exfiltration detection (dynamic tokens)
+      if (canaryTokens) {
+        const networkExfil = detectCanaryExfiltration(report.network || {}, canaryTokens);
+        const outputExfil = detectCanaryInOutput(stdout, stderr, canaryTokens);
+
+        for (const exfil of [...networkExfil.exfiltrations, ...outputExfil.exfiltrations]) {
+          findings.push({
+            type: 'canary_exfiltration',
+            severity: 'CRITICAL',
+            detail: `Package attempted to exfiltrate ${exfil.token} (${exfil.foundIn})`,
+            evidence: exfil.value
+          });
+        }
+      }
+
+      // Static canary token detection (fallback for shell-injected tokens)
+      const staticExfil = detectStaticCanaryExfiltration(report);
+      for (const { token, value } of staticExfil) {
+        const alreadyDetected = findings.some(f =>
+          f.type === 'canary_exfiltration' && f.detail && f.detail.includes(token)
+        );
+        if (!alreadyDetected) {
+          findings.push({
+            type: 'canary_exfiltration',
+            severity: 'CRITICAL',
+            detail: `Canary token exfiltration detected: ${token}`,
+            evidence: value
+          });
+        }
+      }
+
+      const preloadScore = report._preloadScore || 0;
+      const finalScore = Math.min(100, findings.reduce((s, f) => {
+        if (f.type === 'canary_exfiltration') return s + 50;
+        return s;
+      }, score + preloadScore));
+
+      // ── Prevent false CLEAN when sandbox couldn't fully analyze ──
+      // If score is 0 but install or entry point failed, mark INCONCLUSIVE
+      // so downstream (monitor, webhook) doesn't treat this as confirmed benign.
+      if (finalScore === 0) {
+        const entryError = report.entrypoint_output &&
+          /\[ENTRY_ERROR\]/.test(report.entrypoint_output);
+        const installNotFound = report.exit_code !== 0 &&
+          report.exit_code !== undefined &&
+          report.install_output &&
+          /ERR! (?:code E404|404|code ETARGET|code ERESOLVE)/.test(report.install_output);
+        if (entryError || installNotFound) {
+          const reason = installNotFound
+            ? `npm install failed (exit ${report.exit_code})`
+            : 'Entry point require() failed';
+          findings.push({
+            type: 'sandbox_incomplete',
+            severity: 'MEDIUM',
+            detail: `${reason} — behavioral analysis incomplete`,
+            evidence: ((installNotFound ? report.install_output : report.entrypoint_output) || '').substring(0, 300)
+          });
+          resolve({
+            score: -1, severity: 'INCONCLUSIVE', findings, raw_report: report,
+            suspicious: false, inconclusive: true
+          });
+          return;
+        }
+      }
+
+      const severity = getSeverity(finalScore);
+      const result = { score: finalScore, severity, findings, raw_report: report, suspicious: finalScore > 0 };
+
+      resolve(result);
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        console.log('[SANDBOX] Docker not found. Please install Docker.');
+      } else {
+        console.log(`[SANDBOX] Error: ${err.message}`);
+      }
+      resolve(cleanResult);
+    });
+  });
+}
+
+// ── Multi-run sandbox orchestrator ──
+
+async function runSandbox(packageName, options = {}) {
+  const cleanResult = { score: 0, severity: 'CLEAN', findings: [], raw_report: null, suspicious: false };
+
+  const strict = options.strict || false;
+  const canaryEnabled = options.canary !== false; // enabled by default
+  const local = options.local || false;
+
+  // Validate inputs before checking Docker availability
+  let localAbsPath = null;
+  let displayName = packageName;
+
+  if (local) {
+    localAbsPath = path.resolve(packageName);
+    if (!fs.existsSync(localAbsPath)) {
+      console.log('[SANDBOX] Local path does not exist: ' + localAbsPath);
+      return cleanResult;
+    }
+    // Read package name for display
+    const pkgJsonPath = path.join(localAbsPath, 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+        displayName = pkg.name || path.basename(localAbsPath);
+      } catch { displayName = path.basename(localAbsPath); }
+    } else {
+      displayName = path.basename(localAbsPath);
+    }
+  } else {
+    if (!NPM_PACKAGE_REGEX.test(packageName)) {
+      console.log('[SANDBOX] Invalid package name: ' + packageName);
+      return cleanResult;
+    }
+  }
+
+  if (!isDockerAvailable()) {
+    console.log('[SANDBOX] Docker is not installed or not running. Skipping.');
+    return cleanResult;
+  }
+
+  // Detect sandbox runtime (gVisor or default Docker/runc). The decision is a pure,
+  // unit-tested function (resolveSandboxRuntime); here we act on it. isGvisorAvailable()
+  // is memoized, so this is a per-process `docker info`, not a per-scan one.
+  const rt = resolveSandboxRuntime(process.env, isGvisorAvailable());
+  const useGvisor = rt.useGvisor;
+  if (rt.refuse) {
+    // Fail CLOSED: operator set MUADDIB_REQUIRE_GVISOR but runsc is unavailable. Do NOT
+    // silently downgrade to weaker runc isolation — return INCONCLUSIVE (score -1) so the
+    // package is never cleared on weaker isolation than was demanded. Each blocked scan is
+    // ledgered (sandbox_inconclusive); the console warning is throttled to once/process.
+    if (!_sandboxRuntimeWarned) {
+      _sandboxRuntimeWarned = true;
+      console.warn(`[SANDBOX] SECURITY: refusing to run — ${rt.reason}. Install gVisor (scripts/install-gvisor.sh) or unset MUADDIB_REQUIRE_GVISOR to allow runc.`);
+    }
+    return {
+      score: -1,
+      severity: 'INCONCLUSIVE',
+      findings: [{ type: 'gvisor_required_unavailable', severity: 'MEDIUM', detail: rt.reason, evidence: rt.reason }],
+      raw_report: null,
+      suspicious: false,
+      inconclusive: true
+    };
+  }
+  if (rt.warn && !_sandboxRuntimeWarned) {
+    // Fail OPEN but LOUD (was a plain console.log before, or nothing when the env var was
+    // simply unset on a gVisor-capable host): surface the weaker-than-possible isolation
+    // once per process so it is detectable in production logs.
+    _sandboxRuntimeWarned = true;
+    console.warn(`[SANDBOX] WARNING: ${rt.reason}. Set MUADDIB_REQUIRE_GVISOR=1 to fail closed instead of running on runc.`);
+  } else if (useGvisor) {
+    console.log('[SANDBOX] Runtime: gvisor (runsc)');
+  }
+
+  // Generate canary tokens for this sandbox session
+  let canaryTokens = null;
+  if (canaryEnabled) {
+    const canary = generateCanaryTokens();
+    canaryTokens = canary.tokens;
+  }
+
+  const mode = strict ? 'strict' : 'permissive';
+
+  // Acquire sandbox slot — blocks if SANDBOX_CONCURRENCY_MAX containers already running.
+  // skipSemaphore: deferred worker manages its own dedicated slot outside this semaphore.
+  const skipSem = options.skipSemaphore === true;
+  if (!skipSem) {
+    const queueLen = _sandboxSemaphore.queue.length;
+    if (queueLen > 0) {
+      console.log(`[SANDBOX] Waiting for sandbox slot (${_sandboxSemaphore.active}/${SANDBOX_CONCURRENCY_MAX} active, ${queueLen} queued)...`);
+    }
+    await acquireSandboxSlot();
+  }
+
+  try {
+    const runtimeLabel = useGvisor ? 'gvisor' : 'docker';
+    const slotInfo = skipSem ? 'deferred-slot' : `${_sandboxSemaphore.active}/${SANDBOX_CONCURRENCY_MAX}`;
+    // maxRuns: cap number of time-offset runs. Default: all TIME_OFFSETS (3 runs).
+    // T1b/T2 use maxRuns=1 to reduce 270s→90s — time bomb detection is a luxury under load.
+    const effectiveRuns = Math.min(options.maxRuns || TIME_OFFSETS.length, TIME_OFFSETS.length);
+    console.log(`[SANDBOX] Analyzing "${displayName}" in isolated container (mode: ${mode}, runtime: ${runtimeLabel}${canaryEnabled ? ', canary: on' : ''}${local ? ', local' : ''}, runs: ${effectiveRuns}, slots: ${slotInfo})...`);
+
+    const allRuns = [];
+    let bestResult = cleanResult;
+
+    for (let i = 0; i < effectiveRuns; i++) {
+      if (options.signal && options.signal.aborted) {
+        console.log(`[SANDBOX] Aborted — stopping before run ${i + 1}/${effectiveRuns}`);
+        break;
+      }
+      const { offset, label } = TIME_OFFSETS[i];
+      console.log(`[SANDBOX] Run ${i + 1}/${TIME_OFFSETS.length} (${label})...`);
+
+      const runResult = await runSingleSandbox(packageName, {
+        strict,
+        canaryTokens,
+        local,
+        localAbsPath,
+        displayName,
+        timeOffset: offset,
+        runTimeout: SINGLE_RUN_TIMEOUT,
+        gvisor: useGvisor,
+        signal: options.signal || null
+      });
+
+      allRuns.push({
+        run: i + 1,
+        label,
+        timeOffset: offset,
+        score: runResult.score,
+        severity: runResult.severity,
+        findingCount: runResult.findings.length
+      });
+
+      // Keep the result with the highest score
+      if (runResult.score > bestResult.score) {
+        bestResult = runResult;
+      }
+
+      // Early exit: CRITICAL found, skip remaining runs
+      if (runResult.score >= 80) {
+        console.log(`[SANDBOX] Critical score (${runResult.score}) detected in run ${i + 1}. Skipping remaining runs.`);
+        break;
+      }
+    }
+
+    // If all runs were inconclusive (timeout), propagate inconclusive status
+    // instead of returning CLEAN (which would cause false FP relabeling)
+    if (bestResult.score === 0 && allRuns.length > 0 && allRuns.every(r => r.score === -1)) {
+      bestResult = {
+        score: -1,
+        severity: 'INCONCLUSIVE',
+        findings: [{
+          type: 'timeout',
+          severity: 'MEDIUM',
+          detail: `All ${allRuns.length} runs exceeded timeout — package too large or slow install`,
+          evidence: `All ${allRuns.length} runs timed out`
+        }],
+        raw_report: null,
+        suspicious: false,
+        inconclusive: true
+      };
+    }
+
+    // Aborted before any run could conclude → INCONCLUSIVE, never CLEAN.
+    if (options.signal && options.signal.aborted && bestResult.score <= 0) {
+      bestResult = inconclusiveResult('Sandbox aborted before completing a run');
+    }
+
+    // Attach multi-run metadata
+    bestResult.all_runs = allRuns;
+
+    displayResults(bestResult);
+    return bestResult;
+  } finally {
+    if (!skipSem) releaseSandboxSlot();
+  }
+}
+
+// ── Static canary detection ──
+
+/**
+ * Detect static canary token exfiltration in a sandbox report.
+ * Searches HTTP bodies, DNS queries, HTTP request URLs, TLS domains,
+ * filesystem changes, process commands, and install output.
+ * @param {object} report - Parsed sandbox report JSON
+ * @returns {Array<{token: string, value: string}>} Exfiltrated tokens
+ */
+function detectStaticCanaryExfiltration(report) {
+  const exfiltrated = [];
+  if (!report) return exfiltrated;
+
+  const searchable = [];
+
+  // Network data
+  for (const body of (report.network?.http_bodies || [])) if (body) searchable.push(body);
+  for (const domain of (report.network?.dns_queries || [])) if (domain) searchable.push(domain);
+  for (const req of (report.network?.http_requests || [])) {
+    searchable.push(`${req.method || ''} ${req.host || ''}${req.path || ''}`);
+  }
+  for (const tls of (report.network?.tls_connections || [])) if (tls.domain) searchable.push(tls.domain);
+
+  // Filesystem + processes
+  for (const file of (report.filesystem?.created || [])) if (file) searchable.push(file);
+  for (const proc of (report.processes?.spawned || [])) if (proc.command) searchable.push(proc.command);
+
+  // Install + entrypoint output
+  if (report.install_output) searchable.push(report.install_output);
+  if (report.entrypoint_output) searchable.push(report.entrypoint_output);
+
+  const allOutput = searchable.join('\n');
+
+  for (const [tokenName, tokenValue] of Object.entries(STATIC_CANARY_TOKENS)) {
+    if (allOutput.includes(tokenValue)) {
+      exfiltrated.push({ token: tokenName, value: tokenValue });
+    }
+  }
+
+  return exfiltrated;
+}
+
+// ── Scoring engine ──
+
+function scoreFindings(report) {
+  let score = 0;
+  const findings = [];
+
+  // 1. Sensitive file reads
+  for (const file of (report.sensitive_files?.read || [])) {
+    if (/\.npmrc/.test(file) || /\.ssh/.test(file) || /\.aws/.test(file)) {
+      score += 40;
+      findings.push({ type: 'sensitive_file_read', severity: 'CRITICAL', detail: `Read credential file: ${file}`, evidence: file });
+    } else if (/\/etc\/passwd/.test(file) || /\/etc\/shadow/.test(file)) {
+      score += 25;
+      findings.push({ type: 'sensitive_file_read', severity: 'HIGH', detail: `Read system file: ${file}`, evidence: file });
+    } else if (/\.env/.test(file) || /\.gitconfig/.test(file) || /\.bash_history/.test(file)) {
+      score += 15;
+      findings.push({ type: 'sensitive_file_read', severity: 'MEDIUM', detail: `Read config file: ${file}`, evidence: file });
+    }
+  }
+
+  // 2. Sensitive file writes (from strace)
+  for (const file of (report.sensitive_files?.written || [])) {
+    if (/\.npmrc/.test(file) || /\.ssh/.test(file) || /\.aws/.test(file)) {
+      score += 40;
+      findings.push({ type: 'sensitive_file_write', severity: 'CRITICAL', detail: `Write to credential file: ${file}`, evidence: file });
+    } else if (/\/etc\/passwd/.test(file) || /\/etc\/shadow/.test(file)) {
+      score += 25;
+      findings.push({ type: 'sensitive_file_write', severity: 'HIGH', detail: `Write to system file: ${file}`, evidence: file });
+    } else {
+      score += 15;
+      findings.push({ type: 'sensitive_file_write', severity: 'MEDIUM', detail: `Write to sensitive file: ${file}`, evidence: file });
+    }
+  }
+
+  // 3. Filesystem changes — files created in suspicious locations
+  for (const file of (report.filesystem?.created || [])) {
+    if (/^\/usr\/bin\//.test(file) || /crontab/.test(file) || /\/cron\.d\//.test(file)) {
+      score += 50;
+      findings.push({ type: 'suspicious_filesystem', severity: 'CRITICAL', detail: `File created in system path: ${file}`, evidence: file });
+    } else if (/^\/tmp\//.test(file)) {
+      score += 30;
+      findings.push({ type: 'suspicious_filesystem', severity: 'HIGH', detail: `File created in /tmp: ${file}`, evidence: file });
+    }
+  }
+
+  // 4a. DNS queries — classify via network allowlist
+  for (const domain of (report.network?.dns_queries || [])) {
+    const cls = classifyDomain(domain);
+    if (cls === 'safe') continue;
+    if (cls === 'blacklisted') {
+      score += 50;
+      findings.push({ type: 'sandbox_known_exfil_domain', severity: 'CRITICAL', detail: `DNS query to known exfiltration domain: ${domain}`, evidence: domain });
+    } else if (cls === 'tunnel') {
+      score += 30;
+      findings.push({ type: 'sandbox_network_outlier', severity: 'HIGH', detail: `DNS query to tunnel/proxy domain: ${domain}`, evidence: domain });
+    } else {
+      score += 20;
+      findings.push({ type: 'sandbox_network_outlier', severity: 'HIGH', detail: `DNS query to non-registry domain: ${domain}`, evidence: domain });
+    }
+  }
+
+  // 4b. DNS resolutions — extra detail
+  for (const res of (report.network?.dns_resolutions || [])) {
+    const cls = classifyDomain(res.domain);
+    if (cls === 'safe') continue;
+    // Already scored in 4a via dns_queries, but flag the resolution for reporting
+    findings.push({ type: 'dns_resolution', severity: 'INFO', detail: `${res.domain} → ${res.ip}`, evidence: `${res.domain}:${res.ip}` });
+  }
+
+  // 5a. TCP connections — classify via network allowlist
+  for (const conn of (report.network?.http_connections || [])) {
+    if (SAFE_IPS.includes(conn.host)) continue;
+    if (PROBE_PORTS.includes(conn.port)) continue;
+    const cls = classifyDomain(conn.host);
+    if (cls === 'safe') continue;
+    if (cls === 'blacklisted') {
+      score += 50;
+      findings.push({ type: 'sandbox_known_exfil_domain', severity: 'CRITICAL', detail: `TCP connection to known exfiltration host: ${conn.host}:${conn.port}`, evidence: `${conn.host}:${conn.port}` });
+    } else {
+      score += 25;
+      findings.push({ type: 'suspicious_connection', severity: 'HIGH', detail: `TCP connection to ${conn.host}:${conn.port}`, evidence: `${conn.host}:${conn.port}` });
+    }
+  }
+
+  // 5b. TLS connections — classify via network allowlist
+  for (const tls of (report.network?.tls_connections || [])) {
+    const cls = classifyDomain(tls.domain);
+    if (cls === 'safe') continue;
+    if (cls === 'blacklisted') {
+      score += 50;
+      findings.push({ type: 'sandbox_known_exfil_domain', severity: 'CRITICAL', detail: `TLS to known exfiltration domain: ${tls.domain} (${tls.ip}:${tls.port})`, evidence: tls.domain });
+    } else {
+      score += 20;
+      findings.push({ type: 'suspicious_tls', severity: 'HIGH', detail: `TLS connection to ${tls.domain} (${tls.ip}:${tls.port})`, evidence: tls.domain });
+    }
+  }
+
+  // 5c. HTTP exfiltration detection — scan body snippets for sensitive data
+  for (const body of (report.network?.http_bodies || [])) {
+    for (const pat of EXFIL_PATTERNS) {
+      if (pat.pattern.test(body)) {
+        score += 50;
+        findings.push({
+          type: 'data_exfiltration',
+          severity: pat.severity,
+          detail: `HTTP body contains ${pat.label}`,
+          evidence: body.substring(0, 200)
+        });
+        break; // One match per body is enough
+      }
+    }
+  }
+
+  // 5d. HTTP requests — classify via network allowlist
+  for (const req of (report.network?.http_requests || [])) {
+    const cls = classifyDomain(req.host);
+    if (cls === 'safe') continue;
+    if (cls === 'blacklisted') {
+      score += 50;
+      findings.push({ type: 'sandbox_known_exfil_domain', severity: 'CRITICAL', detail: `HTTP request to known exfiltration host: ${req.method} ${req.host}${req.path}`, evidence: `${req.method} ${req.host}${req.path}` });
+    } else {
+      score += 20;
+      findings.push({ type: 'suspicious_http_request', severity: 'HIGH', detail: `${req.method} ${req.host}${req.path}`, evidence: `${req.method} ${req.host}${req.path}` });
+    }
+  }
+
+  // 5e. Blocked connections (strict mode)
+  for (const blocked of (report.network?.blocked_connections || [])) {
+    score += 30;
+    findings.push({ type: 'blocked_connection', severity: 'HIGH', detail: `Blocked outbound to ${blocked.ip}:${blocked.port}`, evidence: `${blocked.ip}:${blocked.port}` });
+  }
+
+  // 6. Suspicious processes
+  for (const p of (report.processes?.spawned || [])) {
+    const cmd = p.command || '';
+    const basename = path.basename(cmd);
+    if (SAFE_SANDBOX_CMDS.has(basename)) continue; // Skip sandbox infrastructure
+    if (DANGEROUS_CMDS.some(d => basename === d)) {
+      score += 40;
+      findings.push({ type: 'suspicious_process', severity: 'CRITICAL', detail: `Dangerous command spawned: ${cmd}`, evidence: cmd });
+    } else if (cmd) {
+      score += 15;
+      findings.push({ type: 'unknown_process', severity: 'MEDIUM', detail: `Unknown process spawned: ${cmd}`, evidence: cmd });
+    }
+  }
+
+  score = Math.min(100, score);
+  return { score, findings };
+}
+
+// ── Network report (detailed, colored) ──
+
+function generateNetworkReport(report, useColor = process.stdout.isTTY) {
+  const lines = [];
+  // Gate ANSI on TTY so piping `sandbox-report` to a file yields clean text
+  // (was unconditionally colored — escape codes leaked into redirected output).
+  const RED = useColor ? '\x1b[31m' : '';
+  const YELLOW = useColor ? '\x1b[33m' : '';
+  const GREEN = useColor ? '\x1b[32m' : '';
+  const CYAN = useColor ? '\x1b[36m' : '';
+  const MAGENTA = useColor ? '\x1b[35m' : '';
+  const BOLD = useColor ? '\x1b[1m' : '';
+  const DIM = useColor ? '\x1b[2m' : '';
+  const RESET = useColor ? '\x1b[0m' : '';
+
+  lines.push('');
+  lines.push(`${BOLD}${MAGENTA}╔══════════════════════════════════════════════════╗${RESET}`);
+  lines.push(`${BOLD}${MAGENTA}║   MUAD'DIB — Sandbox Network Report              ║${RESET}`);
+  lines.push(`${BOLD}${MAGENTA}╚══════════════════════════════════════════════════╝${RESET}`);
+  lines.push('');
+  lines.push(`  Package: ${BOLD}${report.package}${RESET}`);
+  lines.push(`  Mode:    ${report.mode === 'strict' ? RED + 'STRICT' : GREEN + 'permissive'}${RESET}`);
+  lines.push(`  Time:    ${report.timestamp}`);
+  lines.push(`  Duration: ${report.duration_ms}ms`);
+
+  // DNS Resolutions
+  const dnsRes = report.network?.dns_resolutions || [];
+  lines.push('');
+  lines.push(`${BOLD}${CYAN}── DNS Resolutions (${dnsRes.length}) ──${RESET}`);
+  if (dnsRes.length === 0) {
+    lines.push(`  ${DIM}No DNS resolutions captured${RESET}`);
+  } else {
+    for (const r of dnsRes) {
+      const safe = isSafeDomain(r.domain);
+      const icon = safe ? GREEN + '[OK]' : YELLOW + '[!!]';
+      lines.push(`  ${icon}${RESET} ${r.domain} → ${r.ip}`);
+    }
+  }
+
+  // HTTP Requests
+  const httpReqs = report.network?.http_requests || [];
+  lines.push('');
+  lines.push(`${BOLD}${CYAN}── HTTP Requests (${httpReqs.length}) ──${RESET}`);
+  if (httpReqs.length === 0) {
+    lines.push(`  ${DIM}No HTTP requests captured${RESET}`);
+  } else {
+    for (const req of httpReqs) {
+      const safe = isSafeDomain(req.host);
+      const icon = safe ? GREEN + '[OK]' : RED + '[!!]';
+      lines.push(`  ${icon}${RESET} ${req.method} ${req.host}${req.path}`);
+    }
+  }
+
+  // TLS Connections
+  const tlsConns = report.network?.tls_connections || [];
+  lines.push('');
+  lines.push(`${BOLD}${CYAN}── TLS Connections (${tlsConns.length}) ──${RESET}`);
+  if (tlsConns.length === 0) {
+    lines.push(`  ${DIM}No TLS connections captured${RESET}`);
+  } else {
+    for (const tls of tlsConns) {
+      const safe = isSafeDomain(tls.domain);
+      const icon = safe ? GREEN + '[OK]' : YELLOW + '[!!]';
+      lines.push(`  ${icon}${RESET} ${tls.domain} (${tls.ip}:${tls.port})`);
+    }
+  }
+
+  // Blocked Connections (strict mode)
+  const blocked = report.network?.blocked_connections || [];
+  if (blocked.length > 0) {
+    lines.push('');
+    lines.push(`${BOLD}${RED}── Blocked Connections (${blocked.length}) ──${RESET}`);
+    for (const b of blocked) {
+      lines.push(`  ${RED}[BLOCKED]${RESET} ${b.ip}:${b.port}`);
+    }
+  }
+
+  // Data Exfiltration Alerts
+  const bodies = report.network?.http_bodies || [];
+  const exfilAlerts = [];
+  for (const body of bodies) {
+    for (const pat of EXFIL_PATTERNS) {
+      if (pat.pattern.test(body)) {
+        exfilAlerts.push({ label: pat.label, severity: pat.severity, snippet: body.substring(0, 100) });
+        break;
+      }
+    }
+  }
+  if (exfilAlerts.length > 0) {
+    lines.push('');
+    lines.push(`${BOLD}${RED}── Data Exfiltration Alerts (${exfilAlerts.length}) ──${RESET}`);
+    for (const alert of exfilAlerts) {
+      lines.push(`  ${RED}[${alert.severity}]${RESET} ${alert.label} detected in HTTP body`);
+      lines.push(`    ${DIM}${alert.snippet}...${RESET}`);
+    }
+  }
+
+  // Raw TCP connections
+  const conns = report.network?.http_connections || [];
+  if (conns.length > 0) {
+    lines.push('');
+    lines.push(`${BOLD}${CYAN}── Raw TCP Connections (${conns.length}) ──${RESET}`);
+    for (const c of conns) {
+      const safe = isSafeHost(c.host);
+      const icon = safe ? GREEN + '[OK]' : YELLOW + '[!!]';
+      lines.push(`  ${icon}${RESET} ${c.host}:${c.port} (${c.protocol})`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+// ── Helpers ──
+
+function isSafeDomain(domain) {
+  return SAFE_DOMAINS.some(safe => domain === safe || domain.endsWith('.' + safe));
+}
+
+function isSafeHost(host) {
+  return SAFE_DOMAINS.some(safe => host === safe || host.endsWith('.' + safe));
+}
+
+function getSeverity(score) {
+  if (score === 0) return 'CLEAN';
+  if (score <= 20) return 'LOW';
+  if (score <= 50) return 'MEDIUM';
+  if (score <= 80) return 'HIGH';
+  return 'CRITICAL';
+}
+
+function displayResults(result) {
+  console.log(`\n[SANDBOX] Score: ${result.score}/100 — ${result.severity}`);
+  if (result.findings.length === 0) {
+    console.log('[SANDBOX] No suspicious behavior detected.');
+  } else {
+    const actionable = result.findings.filter(f => f.severity !== 'INFO');
+    console.log(`[SANDBOX] ${actionable.length} finding(s):`);
+    for (const f of actionable) {
+      console.log(`  [${f.severity}] ${f.type}: ${f.detail}`);
+    }
+  }
+}
+
+module.exports = { buildSandboxImage, runSandbox, runSingleSandbox, buildDockerArgs, generateFakeHostname, scoreFindings, generateNetworkReport, EXFIL_PATTERNS, SAFE_DOMAINS, getSeverity, displayResults, isDockerAvailable, imageExists, isGvisorAvailable, resolveSandboxRuntime, STATIC_CANARY_TOKENS, detectStaticCanaryExfiltration, analyzePreloadLog, TIME_OFFSETS, SAFE_SANDBOX_CMDS, SANDBOX_CONCURRENCY_MAX, acquireSandboxSlot, tryAcquireSandboxSlot, releaseSandboxSlot, resetSandboxLimiter, getSandboxSemaphore, killAllSandboxContainers };

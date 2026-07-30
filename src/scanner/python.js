@@ -1,5 +1,25 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const fs = require('fs');
 const path = require('path');
+const { getMaxFileSize } = require('../shared/constants.js');
 
 // ============================================
 // REQUIREMENTS.TXT PARSER
@@ -22,7 +42,17 @@ function parseRequirementsTxt(filePath, visited, projectRoot) {
   if (visited.has(resolved)) return [];
   visited.add(resolved);
 
-  const content = fs.readFileSync(filePath, 'utf8');
+  // Guarded read (aligned on parseSetupPy/parsePyprojectToml): attacker-controlled input —
+  // a `-r <dir>` include resolves to a directory (EISDIR) and would otherwise abort the
+  // whole scan (denial-of-detection); oversized files are skipped like everywhere else.
+  let content;
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > getMaxFileSize()) return [];
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return [];
+  }
   const lines = content.split(/\r?\n/);
   const deps = [];
   const relFile = filePath;
@@ -37,14 +67,15 @@ function parseRequirementsTxt(filePath, visited, projectRoot) {
     const includeMatch = line.match(/^(?:-r|--requirement)\s+(.+)$/);
     if (includeMatch) {
       const includePath = path.resolve(path.dirname(filePath), includeMatch[1].trim());
-      // Path traversal guard: ensure included file stays within the project root
-      // Use case-insensitive comparison on Windows (PY-01)
+      // Path traversal guard: ensure included file stays within the project root.
+      // PY-001: Derive rootDir once at top-level, pass it down for all recursive calls.
+      // path.relative enforces a separator boundary (a raw startsWith prefix check let
+      // /scan/pkg-evil pass as "within" /scan/pkg) and handles per-OS case/separator rules.
       const rootDir = projectRoot || path.resolve(path.dirname(filePath));
-      const isWithin = process.platform === 'win32'
-        ? includePath.toLowerCase().startsWith(rootDir.toLowerCase())
-        : includePath.startsWith(rootDir);
+      const rel = path.relative(rootDir, includePath);
+      const isWithin = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
       if (!isWithin) continue;
-      const included = parseRequirementsTxt(includePath, visited, projectRoot);
+      const included = parseRequirementsTxt(includePath, visited, rootDir);
       deps.push(...included);
       continue;
     }
@@ -432,10 +463,87 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Try to detect the NAME of the Python package being scanned. Used by
+ * `pypi-registry.js` to fetch metadata for the scanned package itself.
+ *
+ * Priority order :
+ *  1. pyproject.toml [project] name      (PEP 621)
+ *  2. pyproject.toml [tool.poetry] name
+ *  3. setup.py setup(name="...")
+ *  4. setup.cfg [metadata] name
+ *
+ * Returns null if no canonical name can be extracted.
+ *
+ * @param {string} targetPath
+ * @returns {string | null}
+ */
+function detectScannedPackageName(targetPath) {
+  // Generic helper: extract a section [section_header] up to the next [section]
+  // or end of file. JS regex has no \Z, so we use `(?=\n\[|$)` with no /m flag
+  // on the lookahead anchor.
+  function extractSection(content, header) {
+    // Find [header] line, then capture until the next [ at column 0 or EOF.
+    const startRe = new RegExp('^\\[' + header.replace(/[.[\]\\]/g, '\\$&') + '\\][^\\n]*\\n', 'm');
+    const startMatch = content.match(startRe);
+    if (!startMatch) return null;
+    const start = startMatch.index + startMatch[0].length;
+    const rest = content.slice(start);
+    const nextSection = rest.search(/^\[/m);
+    return nextSection === -1 ? rest : rest.slice(0, nextSection);
+  }
+
+  // 1. pyproject.toml
+  const pyproject = path.join(targetPath, 'pyproject.toml');
+  if (fs.existsSync(pyproject)) {
+    let content;
+    try { content = fs.readFileSync(pyproject, 'utf8'); } catch { content = ''; }
+    // [project] name = "X" — PEP 621
+    const projectSection = extractSection(content, 'project');
+    if (projectSection) {
+      const m = projectSection.match(/^\s*name\s*=\s*["']([^"']+)["']/m);
+      if (m) return m[1].trim();
+    }
+    // [tool.poetry] name = "X"
+    const poetrySection = extractSection(content, 'tool.poetry');
+    if (poetrySection) {
+      const m = poetrySection.match(/^\s*name\s*=\s*["']([^"']+)["']/m);
+      if (m) return m[1].trim();
+    }
+  }
+
+  // 2. setup.py — regex on setup(... name="X" ...). Dotall flag for multi-line args.
+  const setupPy = path.join(targetPath, 'setup.py');
+  if (fs.existsSync(setupPy)) {
+    let content;
+    try { content = fs.readFileSync(setupPy, 'utf8'); } catch { content = ''; }
+    const m = content.match(/\bsetup\s*\(([\s\S]*?)\)/);
+    if (m) {
+      const nameMatch = m[1].match(/\bname\s*=\s*["']([^"']+)["']/);
+      if (nameMatch) return nameMatch[1].trim();
+    }
+  }
+
+  // 3. setup.cfg [metadata] name = X
+  const setupCfg = path.join(targetPath, 'setup.cfg');
+  if (fs.existsSync(setupCfg)) {
+    let content;
+    try { content = fs.readFileSync(setupCfg, 'utf8'); } catch { content = ''; }
+    const metaSection = extractSection(content, 'metadata');
+    if (metaSection) {
+      const m = metaSection.match(/^\s*name\s*=\s*(.+?)\s*$/m);
+      if (m) return m[1].trim();
+    }
+  }
+
+  return null;
+}
+
 module.exports = {
   parseRequirementsTxt,
   parseSetupPy,
   parsePyprojectToml,
   detectPythonProject,
+  detectScannedPackageName,
   normalizePythonName
 };

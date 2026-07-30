@@ -42,9 +42,9 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
-        node-version: '20'
+        node-version: '24'
 
     - name: Install MUAD'DIB
       shell: bash
@@ -91,7 +91,7 @@ runs:
 
     - name: Upload SARIF to GitHub Security
       if: inputs.sarif != '' && always()
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4.36.3
       with:
         sarif_file: ${{ inputs.sarif }}
       continue-on-error: true

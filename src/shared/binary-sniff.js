@@ -1,0 +1,135 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+/**
+ * Detect a file with a SOURCE extension whose bytes are actually binary — an executable,
+ * archive, compressed blob, or custom container. A .js/.ts/.cjs/.mjs file is text by
+ * definition; binary content means a payload carrier disguised as source (jscrambler@8.14.0
+ * shipped its 7.8 MB native-binary container as dist/intro.js). This is magic-AGNOSTIC by
+ * design: the custom `\x1bCSI\x01` header is caught by the leading-control-byte rule, not a
+ * jscrambler signature, so renaming/re-magicking the carrier still trips it.
+ *
+ * FP≈0: valid (even minified/huge) JS/TS is printable UTF-8 with no leading control byte and a low
+ * control-byte ratio. A lone/sparse NUL (legit `${a}\x00${b}` delimiter idiom) is NOT binary on its
+ * own — only dense binary content trips the ratio rule. UTF-16/32 text is explicitly treated as text.
+ */
+'use strict';
+
+// Executable / archive / container magic numbers (offset 0).
+const MAGICS = [
+  { sig: [0x7f, 0x45, 0x4c, 0x46], format: 'ELF executable' },
+  { sig: [0x4d, 0x5a], format: 'PE/DOS executable (MZ)' },
+  { sig: [0xfe, 0xed, 0xfa, 0xce], format: 'Mach-O executable' },
+  { sig: [0xfe, 0xed, 0xfa, 0xcf], format: 'Mach-O executable' },
+  { sig: [0xce, 0xfa, 0xed, 0xfe], format: 'Mach-O executable' },
+  { sig: [0xcf, 0xfa, 0xed, 0xfe], format: 'Mach-O executable' },
+  { sig: [0xca, 0xfe, 0xba, 0xbe], format: 'Mach-O universal / Java class' },
+  { sig: [0x1f, 0x8b], format: 'gzip stream' },
+  { sig: [0x50, 0x4b, 0x03, 0x04], format: 'ZIP/JAR archive' },
+  { sig: [0x50, 0x4b, 0x05, 0x06], format: 'ZIP archive' },
+  { sig: [0x42, 0x5a, 0x68], format: 'bzip2 archive' },
+  { sig: [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00], format: 'xz archive' },
+  { sig: [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c], format: '7-Zip archive' },
+  { sig: [0x52, 0x61, 0x72, 0x21], format: 'RAR archive' },
+  { sig: [0x00, 0x61, 0x73, 0x6d], format: 'WebAssembly module' }
+];
+
+const NONPRINT_RATIO_THRESHOLD = 0.30;
+const RATIO_MIN_BYTES = 64;
+
+function _startsWith(buf, sig) {
+  if (buf.length < sig.length) return false;
+  for (let i = 0; i < sig.length; i++) if (buf[i] !== sig[i]) return false;
+  return true;
+}
+
+/** True for a byte that is legitimate in a source-text file (printable, whitespace, or UTF-8 high-bit). */
+function _isTextByte(b) {
+  return b === 0x09 || b === 0x0a || b === 0x0b || b === 0x0c || b === 0x0d ||
+    (b >= 0x20 && b <= 0x7e) || b >= 0x80;
+}
+
+/**
+ * @param {Buffer} buf - the first bytes of a source-extension file
+ * @returns {{binary:boolean, format?:string, reason?:string}}
+ */
+function sniffBinaryBuffer(buf) {
+  if (!buf || buf.length === 0) return { binary: false };
+
+  // UTF-16/32 BOM → text-encoded (has NUL bytes by design); never flag (avoid FP).
+  if (_startsWith(buf, [0xff, 0xfe]) || _startsWith(buf, [0xfe, 0xff]) ||
+      _startsWith(buf, [0xff, 0xfe, 0x00, 0x00]) || _startsWith(buf, [0x00, 0x00, 0xfe, 0xff])) {
+    return { binary: false };
+  }
+
+  // 1. Known executable/archive/container magic at offset 0.
+  for (const m of MAGICS) {
+    if (_startsWith(buf, m.sig)) {
+      return { binary: true, format: m.format, reason: `${m.format} magic bytes at offset 0` };
+    }
+  }
+
+  // Skip a leading UTF-8 BOM before the text checks.
+  const start = _startsWith(buf, [0xef, 0xbb, 0xbf]) ? 3 : 0;
+
+  // 2. Leading control byte (post-BOM) — a source file starts with text/whitespace, never a
+  //    raw control char. Catches custom containers (e.g. jscrambler's `\x1bCSI`).
+  const first = buf[start];
+  if (first !== undefined && !_isTextByte(first)) {
+    return {
+      binary: true,
+      format: 'custom binary container',
+      reason: `leading control byte 0x${first.toString(16).padStart(2, '0')} (source starts with text)`
+    };
+  }
+
+  // 3. High ratio of non-text control bytes across the prefix (NUL counts as non-text). A LONE or
+  //    sparse NUL is deliberately NOT flagged on its own: `${a}\x00${b}` NUL-delimited keys are a
+  //    legitimate source idiom and were BINSRC-001's dominant FP driver. A genuine carrier is dense,
+  //    so its NULs push the ratio over threshold here; the `\x1bCSI` container trips rule #2 above.
+  let nonText = 0;
+  let n = 0;
+  for (let i = start; i < buf.length; i++) { n++; if (!_isTextByte(buf[i])) nonText++; }
+  if (n >= RATIO_MIN_BYTES && nonText / n > NONPRINT_RATIO_THRESHOLD) {
+    return { binary: true, format: 'binary data', reason: `${Math.round(100 * nonText / n)}% non-text control bytes in prefix` };
+  }
+
+  return { binary: false };
+}
+
+/**
+ * Cheap check for the parser ingestion guard: does already-read utf8 content look binary?
+ * A NUL byte (survives utf8 decode as \x00) or a leading control char means the file is not
+ * source and must not be handed to acorn (it produces no valid AST and wastes the parse budget).
+ * @param {string} str - utf8 file content
+ * @returns {boolean}
+ */
+function looksBinaryString(str) {
+  if (typeof str !== 'string' || str.length === 0) return false;
+  let start = str.charCodeAt(0) === 0xfeff ? 1 : 0; // skip UTF-8 BOM
+  const first = str.charCodeAt(start);
+  if (first < 0x20 && first !== 0x09 && first !== 0x0a && first !== 0x0b && first !== 0x0c && first !== 0x0d) {
+    return true;
+  }
+  const n = Math.min(str.length, 65536);
+  for (let i = start; i < n; i++) if (str.charCodeAt(i) === 0) return true;
+  return false;
+}
+
+module.exports = { sniffBinaryBuffer, looksBinaryString };

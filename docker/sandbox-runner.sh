@@ -10,54 +10,329 @@ fi
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 START_MS=$(date +%s%3N 2>/dev/null || echo 0)
 
-# ── 0. Strict mode: iptables rules ──
+# ══════════════════════════════════════════════════════════════
+# PHASE 0.5: Docker camouflage — anti-sandbox evasion (T1497.001)
+# Modern malware detects Docker before executing (/.dockerenv,
+# /proc/1/cgroup, hex hostname, low uptime, empty home).
+# If detected → stays dormant → sandbox score 0 → false negative.
+# ══════════════════════════════════════════════════════════════
+
+# ── 0.5a. Remove Docker fingerprint files ──
+rm -f /.dockerenv 2>/dev/null || true
+
+# ── 0.5b. Realistic bash_history (credible developer activity) ──
+cat > /home/sandboxuser/.bash_history << 'HIST'
+cd ~/projects/my-app
+git pull origin main
+npm install
+npm test
+code .
+git status
+git add -A && git commit -m "fix: update deps"
+npm run build
+ls -la
+cat package.json
+HIST
+chown sandboxuser:sandboxuser /home/sandboxuser/.bash_history
+
+# ── 0.5c. Fake project directory (developer workstation illusion) ──
+mkdir -p /home/sandboxuser/projects/my-app
+cat > /home/sandboxuser/projects/my-app/package.json << 'EOF'
+{"name":"my-app","version":"2.1.0","main":"index.js","scripts":{"start":"node index.js","test":"jest"}}
+EOF
+chown -R sandboxuser:sandboxuser /home/sandboxuser/projects
+
+# ── 0.5d. Realistic home directory structure ──
+# An empty home is a strong sandbox signal. Real dev machines have these dirs.
+mkdir -p /home/sandboxuser/.config /home/sandboxuser/.local/share \
+  /home/sandboxuser/Downloads /home/sandboxuser/Documents \
+  /home/sandboxuser/.vscode
+chown -R sandboxuser:sandboxuser /home/sandboxuser/.config \
+  /home/sandboxuser/.local /home/sandboxuser/Downloads \
+  /home/sandboxuser/Documents /home/sandboxuser/.vscode
+
+# ══════════════════════════════════════════════════════════════
+# PHASE 0.6: Libfaketime setup (cross-process time acceleration)
+# Accelerates C-level timers (nanosleep, clock_gettime, gettimeofday)
+# for ALL child processes (Python, bash, etc.) — complements preload.js
+# which only patches JS-level timers in Node.js.
+# ══════════════════════════════════════════════════════════════
+
+LIBFAKETIME_PATH="/usr/lib/faketime/libfaketime.so.1"
+[ ! -f "$LIBFAKETIME_PATH" ] && LIBFAKETIME_PATH="/usr/local/lib/faketime/libfaketime.so.1"
+[ ! -f "$LIBFAKETIME_PATH" ] && LIBFAKETIME_PATH=""
+
+if [ -n "$MUADDIB_FAKETIME" ] && [ -n "$LIBFAKETIME_PATH" ]; then
+  export LD_PRELOAD="$LIBFAKETIME_PATH"
+  export FAKETIME="$MUADDIB_FAKETIME"
+  export DONT_FAKE_MONOTONIC=1
+  export FAKETIME_NO_CACHE=1
+  echo "[SANDBOX] libfaketime active: FAKETIME=$FAKETIME" >&2
+fi
+# Clean up internal vars (don't expose sandbox internals to the package)
+unset MUADDIB_FAKETIME MUADDIB_FAKETIME_ACTIVE
+
+# ══════════════════════════════════════════════════════════════
+# PHASE 1: Root-privileged setup (iptables, tcpdump, filesystem snapshot)
+# Runs as root to access raw sockets and kernel netfilter.
+# ══════════════════════════════════════════════════════════════
+
+# ── 0. Strict mode: iptables rules (requires root + NET_ADMIN) ──
 if [ "$MODE" = "strict" ]; then
   echo "[SANDBOX] STRICT MODE — blocking non-essential network..." >&2
   # Allow loopback
-  iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
+  iptables -A OUTPUT -o lo -j ACCEPT
   # Allow DNS (UDP 53)
-  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT 2>/dev/null
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
   # Allow registry.npmjs.org (resolve + allow)
   REGISTRY_IPS=$(nslookup registry.npmjs.org 2>/dev/null | grep -E '^Address:' | tail -n+2 | awk '{print $2}')
   for ip in $REGISTRY_IPS; do
-    iptables -A OUTPUT -d "$ip" -p tcp --dport 443 -j ACCEPT 2>/dev/null
+    iptables -A OUTPUT -d "$ip" -p tcp --dport 443 -j ACCEPT
   done
   # Log + reject everything else
-  iptables -A OUTPUT -j LOG --log-prefix "BLOCKED: " 2>/dev/null
-  iptables -A OUTPUT -j REJECT 2>/dev/null
+  iptables -A OUTPUT -j LOG --log-prefix "BLOCKED: "
+  iptables -A OUTPUT -j REJECT
   echo "[SANDBOX] iptables rules applied." >&2
 fi
 
+# ── 0b. Mock network: DNS proxy + HTTP/HTTPS honeypot (T1071/T1041 behavioral capture) ──
+# Runs in all modes (permissive + strict, gVisor + runc).
+# Safe domains (npm, GitHub, CDNs) are forwarded to the real upstream DNS.
+# Non-safe domains resolve to 127.0.0.2 where HTTP/HTTPS honeypots capture requests.
+# This allows the sandbox to observe network INTENT without real outbound traffic.
+UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+[ -z "$UPSTREAM_DNS" ] && UPSTREAM_DNS="8.8.8.8"
+
+# ── Temporarily disable libfaketime for mock network infrastructure ──
+# Mock network (openssl + mock-network.js) is sandbox infrastructure, NOT the target.
+# libfaketime's x1000 speed multiplier would:
+#   - make openssl generate certs with future timestamps
+#   - make DNS forward timeouts expire in <3ms instead of 3s
+#   - make the ready-check sleep 0.5 complete in <0.5ms
+# This is why runs 2/3 (with libfaketime) fail: mock can't start in time.
+_SAVED_LD_PRELOAD="${LD_PRELOAD}"
+_SAVED_FAKETIME="${FAKETIME}"
+_SAVED_DONT_FAKE="${DONT_FAKE_MONOTONIC}"
+_SAVED_FT_NOCACHE="${FAKETIME_NO_CACHE}"
+unset LD_PRELOAD FAKETIME DONT_FAKE_MONOTONIC FAKETIME_NO_CACHE
+
+# Generate per-session mock CA for HTTPS interception (unique each run).
+# The CA is added to the system SSL bundle so curl/wget/python trust it.
+# Node.js gets it via NODE_EXTRA_CA_CERTS.
+echo "[SANDBOX] Generating mock TLS CA..." >&2
+# OpenSSL 3.x outputs info messages to STDOUT (not stderr) — must suppress both
+# to prevent pollution of the container stdout that carries the JSON report.
+openssl genrsa -out /tmp/mock-ca-key.pem 2048 >/dev/null 2>&1
+openssl req -new -x509 -key /tmp/mock-ca-key.pem -out /tmp/mock-ca.pem \
+  -days 1 -subj "/O=Internet Security Research Group/CN=ISRG Root X2" >/dev/null 2>&1
+openssl genrsa -out /tmp/mock-server-key.pem 2048 >/dev/null 2>&1
+# Default cert for TLS connections without SNI header
+# Note: first openssl stdout is piped (CSR), second needs >/dev/null for info messages
+openssl req -new -key /tmp/mock-server-key.pem -subj "/CN=localhost" 2>/dev/null | \
+  openssl x509 -req -CA /tmp/mock-ca.pem -CAkey /tmp/mock-ca-key.pem \
+    -CAcreateserial -days 1 -out /tmp/mock-cert-default.pem >/dev/null 2>&1
+# Trust the CA system-wide: append to SSL bundle (read-only FS → copy to /tmp)
+cat /etc/ssl/certs/ca-certificates.crt /tmp/mock-ca.pem > /tmp/mock-ca-bundle.pem 2>/dev/null
+export SSL_CERT_FILE=/tmp/mock-ca-bundle.pem
+export NODE_EXTRA_CA_CERTS=/tmp/mock-ca.pem
+
+# Start mock-network.js WITHOUT libfaketime (it inherits the current unset state)
+echo "[SANDBOX] Starting mock network (upstream DNS: $UPSTREAM_DNS)..." >&2
+MUADDIB_UPSTREAM_DNS=$UPSTREAM_DNS node /opt/mock-network.js >/dev/null 2>&1 &
+MOCK_NET_PID=$!
+# Wait for mock servers to be ready (DNS + HTTP + HTTPS)
+# 10 iterations × 0.5s = 5s max (gVisor I/O overhead can delay Node.js cold start)
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  [ -f /tmp/mock-network-ready ] && break
+  sleep 0.5
+done
+if [ -f /tmp/mock-network-ready ]; then
+  echo "nameserver 127.0.0.1" > /etc/resolv.conf
+  echo "[SANDBOX] Mock network active — DNS redirected to 127.0.0.1." >&2
+else
+  echo "[SANDBOX] Mock network failed to start — using real DNS." >&2
+  # Log why it failed (cert files missing? node crash?)
+  [ ! -f /tmp/mock-ca.pem ] && echo "[SANDBOX] DIAG: mock-ca.pem missing (openssl failed)" >&2
+  [ ! -f /tmp/mock-server-key.pem ] && echo "[SANDBOX] DIAG: mock-server-key.pem missing" >&2
+  [ ! -f /tmp/mock-cert-default.pem ] && echo "[SANDBOX] DIAG: mock-cert-default.pem missing" >&2
+  kill "$MOCK_NET_PID" 2>/dev/null
+  MOCK_NET_PID=""
+fi
+
+# ── Restore libfaketime for the target package (npm install + entry point) ──
+if [ -n "$_SAVED_LD_PRELOAD" ]; then
+  export LD_PRELOAD="$_SAVED_LD_PRELOAD"
+  export FAKETIME="$_SAVED_FAKETIME"
+  export DONT_FAKE_MONOTONIC="$_SAVED_DONT_FAKE"
+  export FAKETIME_NO_CACHE="$_SAVED_FT_NOCACHE"
+fi
+unset _SAVED_LD_PRELOAD _SAVED_FAKETIME _SAVED_DONT_FAKE _SAVED_FT_NOCACHE
+
 # ── 1. Filesystem snapshot BEFORE install ──
 echo "[SANDBOX] Snapshot filesystem before install..." >&2
-find / -type f 2>/dev/null | sort > /tmp/fs-before.txt
+cp /opt/fs-baseline.txt /tmp/fs-before.txt
 
-# ── 2. tcpdump: separate captures for DNS, HTTP, TLS ──
-echo "[SANDBOX] Starting network capture..." >&2
-tcpdump -i any -nn 'port 53' -l > /tmp/dns.log 2>/dev/null &
-DNS_PID=$!
-tcpdump -i any -nn -A 'tcp port 80' -l > /tmp/http.log 2>/dev/null &
-HTTP_PID=$!
-tcpdump -i any -nn 'tcp port 443' -l > /tmp/tls.log 2>/dev/null &
-TLS_PID=$!
-tcpdump -i any -nn 'not port 53 and not port 80 and not port 443' -l > /tmp/other.log 2>/dev/null &
-OTHER_PID=$!
-sleep 1
+# ── 2. tcpdump: separate captures for DNS, HTTP, TLS (requires root + NET_RAW) ──
+# gVisor mode: skip tcpdump — gVisor captures network at kernel level via --log-packets.
+# tcpdump requires AF_PACKET which gVisor does not fully support.
+if [ -z "$MUADDIB_GVISOR" ]; then
+  echo "[SANDBOX] Starting network capture..." >&2
+  tcpdump -i any -nn 'port 53' -l > /tmp/dns.log 2>/dev/null &
+  DNS_PID=$!
+  tcpdump -i any -nn -A 'tcp port 80' -l > /tmp/http.log 2>/dev/null &
+  HTTP_PID=$!
+  tcpdump -i any -nn 'tcp port 443' -l > /tmp/tls.log 2>/dev/null &
+  TLS_PID=$!
+  tcpdump -i any -nn 'not port 53 and not port 80 and not port 443' -l > /tmp/other.log 2>/dev/null &
+  OTHER_PID=$!
+  sleep 1
+else
+  echo "[SANDBOX] gVisor mode — network captured at kernel level (--log-packets)." >&2
+fi
 
-# ── 3. npm install with strace ──
-echo "[SANDBOX] Installing $PACKAGE..." >&2
-strace -f -e trace=network,process,open,openat,connect,execve,sendto,recvfrom \
-  -o /tmp/strace.log \
-  npm install "$PACKAGE" --ignore-scripts=false > /tmp/install.log 2>&1
+# ══════════════════════════════════════════════════════════════
+# PHASE 2: Unprivileged install (su sandboxuser)
+# npm install runs as sandboxuser with strace for syscall tracing.
+# strace can trace child processes without SYS_PTRACE (parent→child).
+# ══════════════════════════════════════════════════════════════
+
+# ── 2b. CI environment simulation — random profile per run ──
+# Simulate CI to trigger CI-aware malware. Only one CI provider per run
+# (setting all simultaneously is detectable — no real CI does that).
+echo "[SANDBOX] Simulating CI environment..." >&2
+CI_PROFILE=$((RANDOM % 4))
+export CI=true
+case $CI_PROFILE in
+  0) export GITHUB_ACTIONS=true ;;
+  1) export GITLAB_CI=true ;;
+  2) export TRAVIS=true ;;
+  3) export CIRCLECI=true ;;
+esac
+
+# ── 2c. Canary tokens (honeypots) ──
+# Dynamic tokens are injected by sandbox/index.js via Docker -e flags.
+# Static fallbacks below are project-specific (NOT AWS doc examples — ANSSI audit m4).
+# If exfiltrated via network/DNS/files, sandbox.js detects the theft.
+export GITHUB_TOKEN="${GITHUB_TOKEN:-ghp_mD9kX3pL7vR1wN5qT8yB2cF4hJ6sA0eU3iO9gK}"
+export NPM_TOKEN="${NPM_TOKEN:-npm_7f3e8a2d1b9c4f6e0d5a7b3c8f1e2d4a9b6c0d5e}"
+export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-AKIAMDB7X9R2K4P1N5Q3}"
+export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-mDb8xR3kP7vN2qT5yW1cF9hJ4sA6eU0iO3gK7nL}"
+export SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-https://hooks.example.com/services/TCANARY/BCANARY/canary-slack-token}"
+export DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-https://discord.com/api/webhooks/000000000000000000/abcdefghijklmnopqrstuvwxyz}"
+
+# ── 2d. Honey environment — write canary files to sandboxuser home ──
+# Realistic credential files trap malware that reads sensitive paths.
+# Content is injected via Docker -e from canary-tokens.js (dynamic per session).
+HONEY_HOME="/home/sandboxuser"
+if [ -n "$CANARY_ENV_CONTENT" ]; then
+  printf '%b' "$CANARY_ENV_CONTENT" > "$HONEY_HOME/.env"
+  chown sandboxuser:sandboxuser "$HONEY_HOME/.env"
+fi
+if [ -n "$CANARY_NPMRC_CONTENT" ]; then
+  printf '%b' "$CANARY_NPMRC_CONTENT" > "$HONEY_HOME/.npmrc"
+  chown sandboxuser:sandboxuser "$HONEY_HOME/.npmrc"
+fi
+if [ -n "$CANARY_AWS_CONTENT" ]; then
+  mkdir -p "$HONEY_HOME/.aws"
+  printf '%b' "$CANARY_AWS_CONTENT" > "$HONEY_HOME/.aws/credentials"
+  chown -R sandboxuser:sandboxuser "$HONEY_HOME/.aws"
+fi
+if [ -n "$CANARY_SSH_KEY" ]; then
+  mkdir -p "$HONEY_HOME/.ssh"
+  printf '%b' "$CANARY_SSH_KEY" > "$HONEY_HOME/.ssh/id_rsa"
+  chmod 600 "$HONEY_HOME/.ssh/id_rsa"
+  chown -R sandboxuser:sandboxuser "$HONEY_HOME/.ssh"
+fi
+if [ -n "$CANARY_GITCONFIG" ]; then
+  printf '%b' "$CANARY_GITCONFIG" > "$HONEY_HOME/.gitconfig"
+  chown sandboxuser:sandboxuser "$HONEY_HOME/.gitconfig"
+fi
+# Clean up canary content env vars (don't leak them to the package process)
+unset CANARY_ENV_CONTENT CANARY_NPMRC_CONTENT CANARY_AWS_CONTENT CANARY_SSH_KEY CANARY_GITCONFIG
+echo "[SANDBOX] Honey environment deployed." >&2
+
+# ── 2e. Preload injection — deferred to entry point (phase 3b) ──
+# NODE_OPTIONS='--require /opt/preload.js' monkey-patches http/https/net/dns.
+# Enabling it during npm install causes timeouts (hundreds of wrapped network calls).
+# tcpdump already captures install-phase network; preload targets runtime behavior.
+
+# ── 3. npm install with strace — as sandboxuser ──
+echo "[SANDBOX] Installing $PACKAGE as sandboxuser..." >&2
+cd /sandbox/install
+# Ensure sandboxuser owns the install directory
+chown sandboxuser:sandboxuser /sandbox/install
+# Run npm install as sandboxuser via su, wrapped in strace for syscall tracing.
+# gVisor mode: no strace wrapper — gVisor traces all syscalls at the kernel level.
+if [ -n "$MUADDIB_GVISOR" ]; then
+  touch /tmp/strace.log
+  su sandboxuser -s /bin/sh -c "
+    npm install \"$PACKAGE\" --ignore-scripts=false --fetch-timeout=120000 > /tmp/install.log 2>&1
+  "
+elif [ "$MODE" = "strict" ]; then
+  su sandboxuser -s /bin/sh -c "
+    strace -f -e trace=network,process,open,openat,connect,execve,sendto,recvfrom \
+      -o /tmp/strace.log \
+      npm install \"$PACKAGE\" --ignore-scripts=false --fetch-timeout=120000 > /tmp/install.log 2>&1
+  "
+else
+  touch /tmp/strace.log
+  su sandboxuser -s /bin/sh -c "
+    npm install \"$PACKAGE\" --ignore-scripts=false --fetch-timeout=120000 > /tmp/install.log 2>&1
+  "
+fi
 EXIT_CODE=$?
+
+# ── 3b. Entry point execution — trigger runtime malware ──
+# Malware that puts code in index.js without lifecycle scripts is only
+# caught when the entry point is actually required. strace + tcpdump
+# are already running, so any network/filesystem activity is captured.
+# Preload enabled here (not during install) to avoid npm timeout.
+export NODE_OPTIONS="${NODE_OPTIONS:---require /opt/node_setup.js}"
+echo "[SANDBOX] Executing package entry point..." >&2
+
+if echo "$PACKAGE" | grep -q '^/'; then
+  # Local mode: $PACKAGE is already a path (e.g. /sandbox/local-pkg)
+  REQUIRE_PATH="$PACKAGE"
+else
+  # Remote mode: package installed in node_modules
+  REQUIRE_PATH="/sandbox/install/node_modules/$PACKAGE"
+fi
+
+# gVisor mode: no strace wrapper — gVisor traces at kernel level.
+if [ -n "$MUADDIB_GVISOR" ]; then
+  su sandboxuser -s /bin/sh -c "
+    timeout 30 node -e \"try { require('$REQUIRE_PATH') } catch(e) { console.error('[ENTRY_ERROR] ' + (e.code || 'UNKNOWN') + ': ' + e.message); process.exitCode = 42; }\" > /tmp/entrypoint.log 2>&1
+  " || true
+else
+  su sandboxuser -s /bin/sh -c "
+    strace -f -e trace=network,process,open,openat,connect,execve,sendto,recvfrom \
+      -o /tmp/strace-entrypoint.log \
+      timeout 30 node -e \"try { require('$REQUIRE_PATH') } catch(e) { console.error('[ENTRY_ERROR] ' + (e.code || 'UNKNOWN') + ': ' + e.message); process.exitCode = 42; }\" > /tmp/entrypoint.log 2>&1
+  " || true
+
+  # Merge entrypoint strace into main strace log for unified analysis
+  cat /tmp/strace-entrypoint.log >> /tmp/strace.log 2>/dev/null
+fi
+
+# ══════════════════════════════════════════════════════════════
+# PHASE 3: Post-install analysis (back as root for full access)
+# ══════════════════════════════════════════════════════════════
 
 # ── 4. Filesystem snapshot AFTER install ──
 echo "[SANDBOX] Snapshot filesystem after install..." >&2
 find / -type f 2>/dev/null | sort > /tmp/fs-after.txt
 
-# Stop tcpdump
-kill "$DNS_PID" "$HTTP_PID" "$TLS_PID" "$OTHER_PID" 2>/dev/null
-wait "$DNS_PID" "$HTTP_PID" "$TLS_PID" "$OTHER_PID" 2>/dev/null
+# Stop tcpdump (only if started — skipped in gVisor mode)
+if [ -z "$MUADDIB_GVISOR" ]; then
+  kill "$DNS_PID" "$HTTP_PID" "$TLS_PID" "$OTHER_PID" 2>/dev/null
+  wait "$DNS_PID" "$HTTP_PID" "$TLS_PID" "$OTHER_PID" 2>/dev/null
+fi
+
+# Stop mock network server
+if [ -n "$MOCK_NET_PID" ]; then
+  kill "$MOCK_NET_PID" 2>/dev/null
+  wait "$MOCK_NET_PID" 2>/dev/null
+fi
 
 END_MS=$(date +%s%3N 2>/dev/null || echo 0)
 DURATION_MS=$((END_MS - START_MS))
@@ -65,10 +340,20 @@ DURATION_MS=$((END_MS - START_MS))
 
 # ── 5. Filesystem diff ──
 echo "[SANDBOX] Analyzing filesystem changes..." >&2
-comm -13 /tmp/fs-before.txt /tmp/fs-after.txt | grep -v '^/sandbox/node_modules/' | grep -v '^/tmp/' > /tmp/fs-created.txt
-comm -23 /tmp/fs-before.txt /tmp/fs-after.txt | grep -v '^/sandbox/node_modules/' > /tmp/fs-deleted.txt
+comm -13 /tmp/fs-before.txt /tmp/fs-after.txt | grep -v '^/sandbox/install/' | grep -v '^/sandbox/local-pkg/' | grep -v '^/tmp/' > /tmp/fs-created.txt
+comm -23 /tmp/fs-before.txt /tmp/fs-after.txt | grep -v '^/sandbox/install/' | grep -v '^/sandbox/local-pkg/' > /tmp/fs-deleted.txt
 
 # ── 6. Parse strace ──
+# gVisor mode: strace parsing happens on the host via gvisor-parser.js.
+# Create empty files so the JSON report generation below works with empty arrays.
+if [ -n "$MUADDIB_GVISOR" ]; then
+  echo "[SANDBOX] gVisor mode — strace parsed on host." >&2
+  touch /tmp/sensitive-read.txt /tmp/sensitive-written.txt \
+    /tmp/connections.txt /tmp/suspicious-cmds.txt \
+    /tmp/dns-queries.txt /tmp/dns-resolutions.txt \
+    /tmp/http-requests.txt /tmp/http-bodies.txt \
+    /tmp/tls-connections.txt /tmp/blocked.txt
+else
 echo "[SANDBOX] Parsing strace..." >&2
 
 SENSITIVE='\.npmrc|\.ssh/|\.aws/|\.env|/etc/passwd|/etc/shadow|\.gitconfig|\.bash_history'
@@ -167,13 +452,35 @@ NR==FNR { ip_domain[$2]=$1; next }
 ' /tmp/dns-resolutions.txt /tmp/connections.txt 2>/dev/null | \
   grep '	443$' | sort -u > /tmp/tls-connections.txt
 
-# ── 10. Blocked connections (strict mode) ──
+# ── 10. Blocked connections (strict mode — requires root for dmesg) ──
 if [ "$MODE" = "strict" ]; then
   dmesg 2>/dev/null | grep 'BLOCKED:' | \
     sed -n 's/.*DST=\([^ ]*\).*DPT=\([^ ]*\).*/\1\t\2/p' | \
     sort -u > /tmp/blocked.txt
 else
   touch /tmp/blocked.txt
+fi
+
+fi  # end of non-gVisor strace/network parsing block
+
+# ── 10b. Parse mock network logs (works in both gVisor and runc) ──
+# Mock DNS: non-safe domain queries → append to dns-queries.txt and dns-resolutions.txt
+# Mock HTTP: captured requests → append to http-requests.txt and http-bodies.txt
+# Also parse preload.js MOCK entries from preload.log
+if [ -f /tmp/mock-dns.log ]; then
+  echo "[SANDBOX] Parsing mock DNS log..." >&2
+  jq -r 'select(.safe == false) | .domain' /tmp/mock-dns.log 2>/dev/null | sort -u >> /tmp/dns-queries.txt
+  jq -r 'select(.safe == false and .mock_ip != null) | "\(.domain)\t\(.mock_ip)"' /tmp/mock-dns.log 2>/dev/null >> /tmp/dns-resolutions.txt
+fi
+if [ -f /tmp/mock-http.log ]; then
+  echo "[SANDBOX] Parsing mock HTTP log..." >&2
+  jq -r 'select(.method != null) | "\(.method)\t\(.host)\t\(.path)"' /tmp/mock-http.log 2>/dev/null >> /tmp/http-requests.txt
+  jq -r 'select(.body != null and (.body | length) > 0) | .body' /tmp/mock-http.log 2>/dev/null >> /tmp/http-bodies.txt
+fi
+# Parse preload.js mock entries: MOCK_FETCH body data and MOCK_HTTP_BODY entries
+if [ -f /tmp/preload.log ]; then
+  grep '\[PRELOAD\] MOCK_HTTP_BODY:' /tmp/preload.log 2>/dev/null | \
+    sed 's/.*MOCK_HTTP_BODY: OUT [^ ]* [^ ]* //' | sed 's/ (t+.*$//' >> /tmp/http-bodies.txt 2>/dev/null
 fi
 
 # ── 11. Build JSON with jq ──
@@ -184,88 +491,129 @@ touch /tmp/fs-created.txt /tmp/fs-deleted.txt /tmp/dns-queries.txt \
   /tmp/sensitive-read.txt /tmp/sensitive-written.txt \
   /tmp/connections.txt /tmp/suspicious-cmds.txt /tmp/install.log \
   /tmp/dns-resolutions.txt /tmp/http-requests.txt /tmp/http-bodies.txt \
-  /tmp/tls-connections.txt /tmp/blocked.txt
+  /tmp/tls-connections.txt /tmp/blocked.txt /tmp/entrypoint.log \
+  /tmp/preload.log
 
-INSTALL_OUTPUT=$(head -c 5000 /tmp/install.log)
+# ── Pre-bake all data as JSON files ──
+# Previous approach passed all data via --arg/--argjson on the jq CLI.
+# With install_output (5KB) + preload_log (50KB) + arrays, total CLI size
+# exceeded ARG_MAX → "Filename too long" → jq silent crash → empty report.
+# Fix: write each piece to a JSON file, assemble with --slurpfile (reads from disk).
 
-FS_CREATED=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/fs-created.txt)
-FS_DELETED=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/fs-deleted.txt)
-DNS=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/dns-queries.txt)
-SENS_READ=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/sensitive-read.txt)
-SENS_WRITTEN=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/sensitive-written.txt)
+# Helper: transform text file → JSON array file. Falls back to [] on any failure.
+jq_to_file() {
+  jq -R -s "$1" < "$2" > "$3" 2>/dev/null
+  [ ! -s "$3" ] && echo '[]' > "$3"
+}
 
-CONNS=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {host: .[0], port: (.[1] | tonumber), protocol: "TCP"}
-)' < /tmp/connections.txt)
+# Simple line arrays
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/fs-created.txt /tmp/rpt-fs-created.json
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/fs-deleted.txt /tmp/rpt-fs-deleted.json
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/dns-queries.txt /tmp/rpt-dns.json
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/sensitive-read.txt /tmp/rpt-sens-read.json
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/sensitive-written.txt /tmp/rpt-sens-written.json
+jq_to_file 'split("\n") | map(select(length > 0))' /tmp/http-bodies.txt /tmp/rpt-http-bodies.json
 
-PROCS=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {command: .[1], pid: (.[0] | tonumber)}
-)' < /tmp/suspicious-cmds.txt)
+# Tab-separated → structured JSON arrays (tonumber? // 0 for malformed data)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {host: .[0], port: (.[1] | tonumber? // 0), protocol: "TCP"}
+)' /tmp/connections.txt /tmp/rpt-conns.json
 
-DNS_RESOLUTIONS=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {domain: .[0], ip: .[1]}
-)' < /tmp/dns-resolutions.txt)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {command: (.[1] // ""), pid: (.[0] | tonumber? // 0)}
+)' /tmp/suspicious-cmds.txt /tmp/rpt-procs.json
 
-HTTP_REQUESTS=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {method: .[0], host: .[1], path: .[2]}
-)' < /tmp/http-requests.txt)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {domain: (.[0] // ""), ip: (.[1] // "")}
+)' /tmp/dns-resolutions.txt /tmp/rpt-dns-res.json
 
-HTTP_BODIES=$(jq -R -s 'split("\n") | map(select(length > 0))' < /tmp/http-bodies.txt)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {method: (.[0] // ""), host: (.[1] // ""), path: (.[2] // "")}
+)' /tmp/http-requests.txt /tmp/rpt-http-req.json
 
-TLS_CONNS=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {domain: .[0], ip: .[1], port: (.[2] | tonumber)}
-)' < /tmp/tls-connections.txt)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {domain: (.[0] // ""), ip: (.[1] // ""), port: (.[2] | tonumber? // 0)}
+)' /tmp/tls-connections.txt /tmp/rpt-tls.json
 
-BLOCKED=$(jq -R -s 'split("\n") | map(select(length > 0)) | map(
-  split("\t") | {ip: .[0], port: (.[1] | tonumber)}
-)' < /tmp/blocked.txt)
+jq_to_file 'split("\n") | map(select(length > 0)) | map(
+  split("\t") | {ip: (.[0] // ""), port: (.[1] | tonumber? // 0)}
+)' /tmp/blocked.txt /tmp/rpt-blocked.json
 
-# ── Final JSON ──
-jq -n \
+# String values → JSON string files (properly escaped by jq, truncated by head)
+head -c 5000 /tmp/install.log 2>/dev/null | jq -R -s '.' > /tmp/rpt-install.json 2>/dev/null
+head -c 5000 /tmp/entrypoint.log 2>/dev/null | jq -R -s '.' > /tmp/rpt-entrypoint.json 2>/dev/null
+head -c 50000 /tmp/preload.log 2>/dev/null | jq -R -s '.' > /tmp/rpt-preload.json 2>/dev/null
+for _f in /tmp/rpt-install.json /tmp/rpt-entrypoint.json /tmp/rpt-preload.json; do
+  [ ! -s "$_f" ] && echo '""' > "$_f"
+done
+
+# ── Assemble final JSON from files — zero large CLI arguments ──
+# Only scalars (package name, timestamp, mode, duration, exit_code) on CLI.
+# All arrays and strings read from disk via --slurpfile (jq wraps in array → [0] unwraps).
+REPORT_JSON=$(jq -n \
   --arg package "$PACKAGE" \
   --arg timestamp "$TIMESTAMP" \
   --arg mode "$MODE" \
   --argjson duration "${DURATION_MS:-0}" \
-  --argjson fs_created "$FS_CREATED" \
-  --argjson fs_deleted "$FS_DELETED" \
-  --argjson dns "$DNS" \
-  --argjson connections "$CONNS" \
-  --argjson processes "$PROCS" \
-  --argjson sensitive_read "$SENS_READ" \
-  --argjson sensitive_written "$SENS_WRITTEN" \
-  --argjson dns_resolutions "$DNS_RESOLUTIONS" \
-  --argjson http_requests "$HTTP_REQUESTS" \
-  --argjson http_bodies "$HTTP_BODIES" \
-  --argjson tls_connections "$TLS_CONNS" \
-  --argjson blocked_connections "$BLOCKED" \
-  --arg install_output "$INSTALL_OUTPUT" \
   --argjson exit_code "${EXIT_CODE:-1}" \
+  --slurpfile fs_created /tmp/rpt-fs-created.json \
+  --slurpfile fs_deleted /tmp/rpt-fs-deleted.json \
+  --slurpfile dns /tmp/rpt-dns.json \
+  --slurpfile connections /tmp/rpt-conns.json \
+  --slurpfile processes /tmp/rpt-procs.json \
+  --slurpfile sensitive_read /tmp/rpt-sens-read.json \
+  --slurpfile sensitive_written /tmp/rpt-sens-written.json \
+  --slurpfile dns_resolutions /tmp/rpt-dns-res.json \
+  --slurpfile http_requests /tmp/rpt-http-req.json \
+  --slurpfile http_bodies /tmp/rpt-http-bodies.json \
+  --slurpfile tls_connections /tmp/rpt-tls.json \
+  --slurpfile blocked_connections /tmp/rpt-blocked.json \
+  --slurpfile install_output /tmp/rpt-install.json \
+  --slurpfile entrypoint_output /tmp/rpt-entrypoint.json \
+  --slurpfile preload_log /tmp/rpt-preload.json \
   '{
     package: $package,
     timestamp: $timestamp,
     mode: $mode,
     duration_ms: $duration,
     filesystem: {
-      created: $fs_created,
-      deleted: $fs_deleted,
+      created: $fs_created[0],
+      deleted: $fs_deleted[0],
       modified: []
     },
     network: {
-      dns_queries: $dns,
-      dns_resolutions: $dns_resolutions,
-      http_connections: $connections,
-      http_requests: $http_requests,
-      http_bodies: $http_bodies,
-      tls_connections: $tls_connections,
-      blocked_connections: $blocked_connections
+      dns_queries: $dns[0],
+      dns_resolutions: $dns_resolutions[0],
+      http_connections: $connections[0],
+      http_requests: $http_requests[0],
+      http_bodies: $http_bodies[0],
+      tls_connections: $tls_connections[0],
+      blocked_connections: $blocked_connections[0]
     },
     processes: {
-      spawned: $processes
+      spawned: $processes[0]
     },
     sensitive_files: {
-      read: $sensitive_read,
-      written: $sensitive_written
+      read: $sensitive_read[0],
+      written: $sensitive_written[0]
     },
-    install_output: $install_output,
+    install_output: $install_output[0],
+    entrypoint_output: $entrypoint_output[0],
+    preload_log: $preload_log[0],
     exit_code: $exit_code
-  }'
+  }' 2>/tmp/jq-final-error.log)
+
+echo "---MUADDIB-REPORT-START---"
+if [ -n "$REPORT_JSON" ]; then
+  printf '%s\n' "$REPORT_JSON"
+else
+  JQ_ERR=$(head -c 500 /tmp/jq-final-error.log 2>/dev/null)
+  echo "[SANDBOX] jq report FAILED: $JQ_ERR" >&2
+  # Diagnose: list any empty/missing report files
+  for _f in /tmp/rpt-*.json; do
+    [ ! -s "$_f" ] && echo "[SANDBOX] DIAG: $_f empty/missing" >&2
+  done
+  # Fallback minimal JSON so the host parser doesn't crash
+  printf '{"package":"%s","timestamp":"%s","mode":"%s","duration_ms":%s,"filesystem":{"created":[],"deleted":[],"modified":[]},"network":{"dns_queries":[],"dns_resolutions":[],"http_connections":[],"http_requests":[],"http_bodies":[],"tls_connections":[],"blocked_connections":[]},"processes":{"spawned":[]},"sensitive_files":{"read":[],"written":[]},"install_output":"","entrypoint_output":"","preload_log":"","exit_code":%s}\n' \
+    "$PACKAGE" "$TIMESTAMP" "$MODE" "${DURATION_MS:-0}" "${EXIT_CODE:-1}"
+fi

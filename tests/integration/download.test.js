@@ -1,0 +1,314 @@
+const { test, asyncTest, assert } = require('../test-utils');
+
+async function runDownloadTests() {
+  console.log('\n=== DOWNLOAD TESTS ===\n');
+
+  const { isAllowedDownloadRedirect, sanitizePackageName, MAX_REDIRECTS } = require('../../src/shared/download.js');
+
+  // --- M4 (audit 2026-07): partial tar-bomb mitigation via gzip ISIZE pre-check ---
+  {
+    const zlib = require('zlib');
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const { extractArchive, _readGzipUncompressedHint } = require('../../src/shared/download.js');
+    const { MAX_EXTRACTED_SIZE } = require('../../src/shared/constants.js');
+
+    test('M4: readGzipUncompressedHint reads the gzip ISIZE (small = not flagged), null for non-gzip', () => {
+      const tmp = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'm4u-'));
+      try {
+        const gz = pathx.join(tmp, 'small.tgz');
+        fsx.writeFileSync(gz, zlib.gzipSync(Buffer.alloc(1000, 0x41)));
+        const hint = _readGzipUncompressedHint(gz);
+        assert(hint === 1000, `ISIZE should equal 1000, got ${hint}`);
+        assert(hint < MAX_EXTRACTED_SIZE, 'a normal small tarball must not be flagged by the size cap');
+        const notgz = pathx.join(tmp, 'plain.tgz');
+        fsx.writeFileSync(notgz, Buffer.from('plain text, not a gzip stream'));
+        assert(_readGzipUncompressedHint(notgz) === null, 'non-gzip input must yield null (no false size gate)');
+      } finally {
+        fsx.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    test('M4: extraction refused before tar when the gzip declares an oversize uncompressed length', () => {
+      const tmp = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'm4i-'));
+      try {
+        const buf = zlib.gzipSync(Buffer.from('content is irrelevant — the size check runs first'));
+        buf.writeUInt32LE(2 * 1024 * 1024 * 1024, buf.length - 4); // forge ISIZE = 2GB (> 1GB cap)
+        const tgz = pathx.join(tmp, 'bomb.tgz');
+        fsx.writeFileSync(tgz, buf);
+        let threw = null;
+        try { extractArchive(tgz, tmp); } catch (e) { threw = e; }
+        assert(threw, 'extraction must throw on a declared-oversize archive');
+        assert(/refused|exceeds/i.test(threw.message), `must be the size-refusal error, got: ${threw && threw.message}`);
+      } finally {
+        fsx.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  }
+
+  // --- isAllowedDownloadRedirect ---
+
+  test('DOWNLOAD: Allows HTTPS to registry.npmjs.org', () => {
+    const result = isAllowedDownloadRedirect('https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz');
+    assert(result.allowed === true, 'Should allow registry.npmjs.org');
+  });
+
+  test('DOWNLOAD: Allows HTTPS to files.pythonhosted.org', () => {
+    const result = isAllowedDownloadRedirect('https://files.pythonhosted.org/packages/pkg.tar.gz');
+    assert(result.allowed === true, 'Should allow files.pythonhosted.org');
+  });
+
+  test('DOWNLOAD: Allows HTTPS to registry.yarnpkg.com', () => {
+    const result = isAllowedDownloadRedirect('https://registry.yarnpkg.com/pkg/-/pkg-1.0.0.tgz');
+    assert(result.allowed === true, 'Should allow registry.yarnpkg.com');
+  });
+
+  test('DOWNLOAD: Blocks HTTP (non-HTTPS)', () => {
+    const result = isAllowedDownloadRedirect('http://registry.npmjs.org/pkg');
+    assert(result.allowed === false, 'Should block HTTP');
+    assert(result.error.includes('non-HTTPS'), 'Error should mention non-HTTPS');
+  });
+
+  test('DOWNLOAD: Blocks private IP 127.0.0.1', () => {
+    const result = isAllowedDownloadRedirect('https://127.0.0.1/payload');
+    assert(result.allowed === false, 'Should block 127.0.0.1');
+    assert(result.error.includes('private IP'), 'Error should mention private IP');
+  });
+
+  test('DOWNLOAD: Blocks private IP 10.x.x.x', () => {
+    const result = isAllowedDownloadRedirect('https://10.0.0.1/payload');
+    assert(result.allowed === false, 'Should block 10.x.x.x');
+  });
+
+  test('DOWNLOAD: Blocks private IP 192.168.x.x', () => {
+    const result = isAllowedDownloadRedirect('https://192.168.1.1/payload');
+    assert(result.allowed === false, 'Should block 192.168.x.x');
+  });
+
+  test('DOWNLOAD: Blocks non-allowlisted domain', () => {
+    const result = isAllowedDownloadRedirect('https://evil.com/payload');
+    assert(result.allowed === false, 'Should block evil.com');
+    assert(result.error.includes('not in allowlist'), 'Error should mention allowlist');
+  });
+
+  test('DOWNLOAD: Blocks invalid URL', () => {
+    const result = isAllowedDownloadRedirect('not-a-url');
+    assert(result.allowed === false, 'Should block invalid URL');
+    assert(result.error.includes('invalid URL'), 'Error should mention invalid URL');
+  });
+
+  // --- sanitizePackageName ---
+
+  test('DOWNLOAD: Sanitizes path traversal from package name', () => {
+    const result = sanitizePackageName('../../../etc/passwd');
+    assert(!result.includes('..'), 'Should remove .. sequences');
+    assert(!result.includes('/'), 'Should replace / with _');
+    assert(result.includes('etc'), 'Should preserve etc');
+    assert(result.includes('passwd'), 'Should preserve passwd');
+  });
+
+  test('DOWNLOAD: Sanitizes scoped package name', () => {
+    assert(sanitizePackageName('@scope/package') === 'scope_package', 'Should replace @ and /');
+  });
+
+  test('DOWNLOAD: Leaves simple name unchanged', () => {
+    assert(sanitizePackageName('express') === 'express', 'Simple name should be unchanged');
+  });
+
+  test('DOWNLOAD: Handles multiple path traversal sequences', () => {
+    const result = sanitizePackageName('../../pkg/../evil');
+    assert(!result.includes('..'), 'Should remove all .. sequences');
+    assert(!result.includes('/'), 'Should replace all /');
+    assert(result.includes('pkg'), 'Should preserve pkg');
+    assert(result.includes('evil'), 'Should preserve evil');
+  });
+
+  // --- MAX_REDIRECTS (v2.6.5) ---
+
+  test('DOWNLOAD: MAX_REDIRECTS is exported and equals 5', () => {
+    assert(MAX_REDIRECTS === 5, `MAX_REDIRECTS should be 5, got ${MAX_REDIRECTS}`);
+  });
+
+  // --- normalizeHostname (SSRF octal/hex bypass protection) ---
+
+  const { normalizeHostname, isPrivateIP } = require('../../src/shared/download.js');
+
+  test('DOWNLOAD: normalizeHostname converts decimal IP', () => {
+    assert(normalizeHostname('2130706433') === '127.0.0.1', 'Decimal 2130706433 should be 127.0.0.1');
+  });
+
+  test('DOWNLOAD: normalizeHostname converts hex integer IP', () => {
+    assert(normalizeHostname('0x7f000001') === '127.0.0.1', 'Hex 0x7f000001 should be 127.0.0.1');
+  });
+
+  test('DOWNLOAD: normalizeHostname converts octal dotted IP', () => {
+    assert(normalizeHostname('0177.0.0.01') === '127.0.0.1', 'Octal 0177.0.0.01 should be 127.0.0.1');
+  });
+
+  test('DOWNLOAD: normalizeHostname converts hex dotted IP', () => {
+    assert(normalizeHostname('0x7f.0x0.0x0.0x1') === '127.0.0.1', 'Hex dotted should be 127.0.0.1');
+  });
+
+  test('DOWNLOAD: normalizeHostname converts mixed octal/decimal', () => {
+    assert(normalizeHostname('0xA.0.0.01') === '10.0.0.1', 'Mixed hex+octal should be 10.0.0.1');
+  });
+
+  test('DOWNLOAD: normalizeHostname preserves normal hostnames', () => {
+    assert(normalizeHostname('registry.npmjs.org') === 'registry.npmjs.org', 'Should preserve normal hostname');
+  });
+
+  test('DOWNLOAD: normalizeHostname handles IPv6-mapped IPv4', () => {
+    assert(normalizeHostname('::ffff:127.0.0.1') === '127.0.0.1', 'Should unwrap IPv6-mapped IPv4');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks octal loopback', () => {
+    assert(isPrivateIP('0177.0.0.01') === true, 'Octal 127.0.0.1 should be private');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks hex integer loopback', () => {
+    assert(isPrivateIP('0x7f000001') === true, 'Hex integer 127.0.0.1 should be private');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks hex dotted 10.x', () => {
+    assert(isPrivateIP('0xA.0.0.1') === true, 'Hex dotted 10.0.0.1 should be private');
+  });
+
+  test('DOWNLOAD: isAllowedDownloadRedirect blocks octal loopback', () => {
+    const result = isAllowedDownloadRedirect('https://0177.0.0.01/payload');
+    assert(result.allowed === false, 'Should block octal loopback');
+  });
+
+  // --- IPv6 SSRF protection (v2.6.9) ---
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 loopback ::1', () => {
+    assert(isPrivateIP('::1') === true, '::1 should be private');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 ULA fc00::', () => {
+    assert(isPrivateIP('fc00::1') === true, 'fc00::1 should be private');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 link-local fe80::', () => {
+    assert(isPrivateIP('fe80::1') === true, 'fe80::1 should be private');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks ::ffff:127.0.0.1 mapped address', () => {
+    assert(isPrivateIP('::ffff:127.0.0.1') === true, '::ffff:127.0.0.1 should be private');
+  });
+
+  await asyncTest('DOWNLOAD: safeDnsResolve passes a public direct IP but blocks a private direct IP', async () => {
+    const { safeDnsResolve } = require('../../src/shared/download.js');
+    const pub = await safeDnsResolve('8.8.8.8');
+    assert(pub === '8.8.8.8', 'a public direct IP passes through');
+    let blocked = false;
+    try { await safeDnsResolve('127.0.0.1'); } catch (e) { blocked = /rebinding|private/i.test(e.message); }
+    assert(blocked, 'a private direct IP (127.0.0.1) must be rejected');
+  });
+
+  await asyncTest('DOWNLOAD: safeDnsResolve rejects a hostname that resolves to a private IP (anti-rebinding core)', async () => {
+    const { safeDnsResolve } = require('../../src/shared/download.js');
+    // Mock the DNS layer (no real network) to drive the resolution path: the whole
+    // point of safeDnsResolve is to re-check the RESOLVED address, defeating DNS
+    // rebinding. The old test only exercised the direct-IP passthrough.
+    const dns = require('dns');
+    const origV4 = dns.promises.resolve4;
+    const origV6 = dns.promises.resolve6;
+    dns.promises.resolve6 = async () => { throw new Error('no AAAA'); };
+    try {
+      // Case 1: hostname resolves to a private IP → must be blocked.
+      dns.promises.resolve4 = async () => ['10.0.0.5'];
+      let blocked = false;
+      try { await safeDnsResolve('rebind.evil.test'); } catch (e) { blocked = /private IP/i.test(e.message); }
+      assert(blocked, 'a hostname resolving to a private IP must be blocked (rebinding defense)');
+
+      // Case 2: hostname resolves to a public IP → returns it.
+      dns.promises.resolve4 = async () => ['93.184.216.34'];
+      const addr = await safeDnsResolve('example.test');
+      assert(addr === '93.184.216.34', 'a hostname resolving to a public IP resolves normally');
+    } finally {
+      dns.promises.resolve4 = origV4;
+      dns.promises.resolve6 = origV6;
+    }
+  });
+
+  // --- IPv6 special ranges (v2.7.9) ---
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 multicast ff02::1', () => {
+    assert(isPrivateIP('ff02::1') === true, 'ff02::1 multicast should be blocked');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 documentation 2001:db8::1', () => {
+    assert(isPrivateIP('2001:db8::1') === true, '2001:db8::1 should be blocked');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 discard 100::1', () => {
+    assert(isPrivateIP('100::1') === true, '100::1 discard should be blocked');
+  });
+
+  test('DOWNLOAD: isPrivateIP blocks IPv6 NAT64 64:ff9b::1', () => {
+    assert(isPrivateIP('64:ff9b::1') === true, '64:ff9b::1 NAT64 should be blocked');
+  });
+
+  test('DOWNLOAD: isPrivateIP allows public IPv6 2607:f8b0::1', () => {
+    assert(isPrivateIP('2607:f8b0::1') === false, 'Google public IPv6 should be allowed');
+  });
+
+  // --- Monitor scoring weight alignment (v2.6.9) ---
+
+  test('DOWNLOAD: Monitor scoring weights match scoring.js SEVERITY_WEIGHTS', () => {
+    const { computeRiskScore } = require('../../src/monitor.js');
+    const { SEVERITY_WEIGHTS } = require('../../src/scoring.js');
+
+    // 1 CRITICAL should give SEVERITY_WEIGHTS.CRITICAL
+    const critScore = computeRiskScore({ critical: 1, high: 0, medium: 0, low: 0 });
+    assert(critScore === SEVERITY_WEIGHTS.CRITICAL, `1 CRITICAL should give ${SEVERITY_WEIGHTS.CRITICAL}, got ${critScore}`);
+
+    // 1 HIGH should give SEVERITY_WEIGHTS.HIGH
+    const highScore = computeRiskScore({ critical: 0, high: 1, medium: 0, low: 0 });
+    assert(highScore === SEVERITY_WEIGHTS.HIGH, `1 HIGH should give ${SEVERITY_WEIGHTS.HIGH}, got ${highScore}`);
+
+    // 1 MEDIUM should give SEVERITY_WEIGHTS.MEDIUM
+    const medScore = computeRiskScore({ critical: 0, high: 0, medium: 1, low: 0 });
+    assert(medScore === SEVERITY_WEIGHTS.MEDIUM, `1 MEDIUM should give ${SEVERITY_WEIGHTS.MEDIUM}, got ${medScore}`);
+  });
+
+  // --- extractArchiveOffThread (OOM fix 2026-06-19) ---
+
+  await asyncTest('DOWNLOAD: extractArchiveOffThread matches inline extraction', async () => {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const AdmZip = require('adm-zip');
+    const { extractArchive, extractArchiveOffThread } = require('../../src/shared/download.js');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'muaddib-extract-'));
+    try {
+      const zipPath = path.join(tmp, 'pkg.zip');
+      const zip = new AdmZip();
+      zip.addFile('package/package.json', Buffer.from('{"name":"x","version":"1.0.0"}'));
+      zip.addFile('package/index.js', Buffer.from('module.exports = 42;'));
+      zip.writeZip(zipPath);
+      const dIn = path.join(tmp, 'in'); const dOff = path.join(tmp, 'off');
+      fs.mkdirSync(dIn); fs.mkdirSync(dOff);
+      const rootIn = extractArchive(zipPath, dIn);
+      const rootOff = await extractArchiveOffThread(zipPath, dOff);
+      for (const f of ['package.json', 'index.js']) {
+        const a = fs.readFileSync(path.join(rootIn, f), 'utf8');
+        const b = fs.readFileSync(path.join(rootOff, f), 'utf8');
+        assert(a === b, `offthread ${f} content must match inline extraction`);
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await asyncTest('DOWNLOAD: extractArchiveOffThread rejects on a missing archive', async () => {
+    const { extractArchiveOffThread } = require('../../src/shared/download.js');
+    let threw = false;
+    try { await extractArchiveOffThread('/no/such/muaddib-archive.zip', '/tmp'); }
+    catch { threw = true; }
+    assert(threw, 'must reject when the archive does not exist (callers then fall back to metadata)');
+  });
+}
+
+module.exports = { runDownloadTests };

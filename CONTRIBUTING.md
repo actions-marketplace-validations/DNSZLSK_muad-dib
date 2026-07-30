@@ -2,6 +2,18 @@
 
 Thanks for your interest in improving MUAD'DIB!
 
+## License and Contributor License Agreement (CLA)
+
+MUAD'DIB is licensed under the **GNU Affero General Public License v3.0 only**
+(`AGPL-3.0-only`). By contributing, you agree that your contribution is provided
+under that same license (inbound = outbound) **and** you accept the
+[Contributor License Agreement](CLA.md), which lets the project be dual-licensed
+(AGPL for the community, commercial licenses for organizations that need them).
+
+Practically: sign off on your commits with `git commit -s` (Developer Certificate
+of Origin), and state in your first pull request that you have read and agree to
+the CLA. See [CLA.md](CLA.md) for the full text.
+
 ## Ways to contribute
 
 ### 1. Add new IOCs (Indicators of Compromise)
@@ -62,9 +74,34 @@ Open an issue with:
 ### 5. Report missed detections
 
 Open an issue with:
-- Malicious package name
+- Malicious package name (npm or PyPI)
 - What it does
 - Links to advisories
+
+### 6. Improve Python/PyPI support
+
+MUAD'DIB scans Python projects via `src/scanner/python.js` (requirements.txt, setup.py, pyproject.toml). PyPI IOCs come from the OSV dump (14,000+ malicious packages). To contribute:
+- Add PyPI IOCs to the YAML database
+- Improve Python dependency parsing in `src/scanner/python.js`
+- Add popular PyPI packages to the typosquatting whitelist in `src/scanner/typosquat.js`
+
+### 7. Add adversarial test samples
+
+MUAD'DIB maintains evasive samples to validate scanner robustness (107 samples, **96.26% ADR** on available samples, global threshold=20):
+- `datasets/adversarial/` -- 68 samples with evasion techniques (encoding, splitting, indirection)
+- `datasets/holdout-v2/` through `datasets/holdout-v6/` -- 50 holdout samples (5 rounds of 10)
+
+To add a new adversarial sample:
+1. Create a directory in `datasets/adversarial/` with a malicious pattern that evades detection
+2. Add a threshold entry in `src/commands/evaluate.js` (`ADVERSARIAL_THRESHOLDS`)
+3. Run `node bin/muaddib.js evaluate --adversarial` to verify detection
+
+### 8. Expand ground truth
+
+The ground truth dataset (`tests/ground-truth/`) contains **96 real-world attack samples** (94 in-scope, 2 out-of-scope: GT-005 colors and GT-009 faker, protestware with `min_threats=0`). 22 added 2026-05-25 across three tracks: Track C synthetic for PYSRC/PYAST/AST-092/AICONF-004/PKG-022 (GT-068..083), Track A real-world tarballs from VPS archive (GT-084..089), Track B reconstructions from `data/all-review-results.json` (GT-090..096). 13 PyPI samples (was 0). To add a new sample:
+1. Add the malicious package source to `tests/ground-truth/samples/<name>/`
+2. Add an entry in `tests/ground-truth/attacks.json` with `id`, `name`, `version`, `ecosystem`, `year`, `vector`, `severity`, `description`, `source`, `mitre`, `sample_dir`, `expected` (`min_threats`, `rules`, `severities`, `scanners`, `score_typical`, `tpr_tier`)
+3. Run `node bin/muaddib.js evaluate` to verify TPR; or `scripts/track-a-add-gt-realworld.js <gt-id> <sample-dir>` for real-world tarballs (auto-extracts review reasoning if present)
 
 ## Development
 ```bash
@@ -76,7 +113,13 @@ npm test
 
 ## Testing your changes
 ```bash
+# Scan test fixtures
 node bin/muaddib.js scan tests/samples --explain
+
+# Run evaluation (TPR, FPR, ADR)
+node bin/muaddib.js evaluate --ground-truth    # TPR on 94 in-scope real attacks
+node bin/muaddib.js evaluate --adversarial     # ADR on 107 evasive samples
+node bin/muaddib.js evaluate --benign          # FPR on 545 scanned npm packages (548 curated)
 ```
 
 ## Pull request process
@@ -85,9 +128,10 @@ node bin/muaddib.js scan tests/samples --explain
 2. Create a branch (`git checkout -b feature/my-feature`)
 3. Make your changes
 4. Run tests (`npm test`)
-5. Commit (`git commit -m "Add my feature"`)
-6. Push (`git push origin feature/my-feature`)
-7. Open a Pull Request
+5. Run `node bin/muaddib.js evaluate --ground-truth --adversarial` to check for regressions
+6. Commit with sign-off (`git commit -s -m "Add my feature"`)
+7. Push (`git push origin feature/my-feature`)
+8. Open a Pull Request
 
 ## Code of conduct
 

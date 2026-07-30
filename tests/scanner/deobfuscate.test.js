@@ -1,0 +1,358 @@
+const { test, assert, assertIncludes } = require('../test-utils');
+const { deobfuscate } = require('../../src/scanner/deobfuscate.js');
+const acorn = require('acorn');
+
+async function runDeobfuscateTests() {
+  console.log('\n=== DEOBFUSCATE TESTS ===\n');
+
+  // =====================================================
+  // 1. STRING CONCAT FOLDING (5 tests)
+  // =====================================================
+
+  test('DEOBFUSCATE: String concat — simple two literals', () => {
+    const { code, transforms } = deobfuscate(`const x = 'hello' + ' world';`);
+    assertIncludes(code, "'hello world'", 'Should fold two string literals');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'string_concat', `Expected type string_concat, got ${transforms[0].type}`);
+    assertIncludes(transforms[0].before, "'hello' + ' world'", 'Before should show original concat');
+    assert(transforms[0].after === "'hello world'", `After should be 'hello world', got ${transforms[0].after}`);
+  });
+
+  test('DEOBFUSCATE: String concat — nested (3+ parts)', () => {
+    const { code, transforms } = deobfuscate(`const m = 'ch' + 'il' + 'd_' + 'process';`);
+    assertIncludes(code, "'child_process'", 'Should fold nested concat to child_process');
+    assert(transforms.length === 1, `Expected 1 transform (outermost), got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: String concat — mixed quotes', () => {
+    const { code } = deobfuscate(`const x = "he" + 'llo';`);
+    assertIncludes(code, "'hello'", 'Should fold mixed quote concat');
+  });
+
+  test('DEOBFUSCATE: String concat — does NOT fold with variable', () => {
+    const { code, transforms } = deobfuscate(`const y = 'hello' + someVar;`);
+    assertIncludes(code, "'hello' + someVar", 'Should NOT fold when variable is present');
+    assert(transforms.length === 0, `Expected 0 transforms when variable present, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: String concat — does NOT fold number + string', () => {
+    const { code, transforms } = deobfuscate(`const z = 42 + 'px';`);
+    assert(transforms.length === 0, `Expected 0 transforms for number+string, got ${transforms.length}`);
+  });
+
+  // =====================================================
+  // 2. CHARCODE REBUILD (5 tests)
+  // =====================================================
+
+  test('DEOBFUSCATE: CharCode — simple fromCharCode', () => {
+    const { code, transforms } = deobfuscate(`const x = String.fromCharCode(104, 101, 108, 108, 111);`);
+    assertIncludes(code, "'hello'", 'Should decode fromCharCode to hello');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'charcode', `Expected type charcode, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: CharCode — multi-char (child_process)', () => {
+    const { code } = deobfuscate(`const m = String.fromCharCode(99, 104, 105, 108, 100, 95, 112, 114, 111, 99, 101, 115, 115);`);
+    assertIncludes(code, "'child_process'", 'Should decode to child_process');
+  });
+
+  test('DEOBFUSCATE: CharCode — spread array', () => {
+    const { code, transforms } = deobfuscate(`const x = String.fromCharCode(...[104, 101, 108, 108, 111]);`);
+    assertIncludes(code, "'hello'", 'Should decode spread array fromCharCode');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: CharCode — does NOT fold with variable arg', () => {
+    const { code, transforms } = deobfuscate(`const x = String.fromCharCode(104, myVar, 108);`);
+    assertIncludes(code, 'String.fromCharCode', 'Should NOT fold when variable arg present');
+    assert(transforms.length === 0, `Expected 0 transforms, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: CharCode — does NOT fold with no args', () => {
+    const { code, transforms } = deobfuscate(`const x = String.fromCharCode();`);
+    assertIncludes(code, 'String.fromCharCode()', 'Should NOT fold with no args');
+    assert(transforms.length === 0, `Expected 0 transforms, got ${transforms.length}`);
+  });
+
+  // =====================================================
+  // 3. BASE64 DECODE (5 tests)
+  // =====================================================
+
+  test('DEOBFUSCATE: Base64 — Buffer.from().toString()', () => {
+    const { code, transforms } = deobfuscate(`const x = Buffer.from('Y2hpbGRfcHJvY2Vzcw==', 'base64').toString();`);
+    assertIncludes(code, "'child_process'", 'Should decode base64 Buffer.from to child_process');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'base64', `Expected type base64, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: Base64 — atob()', () => {
+    const { code, transforms } = deobfuscate(`const x = atob('aGVsbG8=');`);
+    assertIncludes(code, "'hello'", 'Should decode atob to hello');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'base64', `Expected type base64, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: Base64 — chained with toString encoding', () => {
+    const { code } = deobfuscate(`const x = Buffer.from('ZXZhbA==', 'base64').toString();`);
+    assertIncludes(code, "'eval'", 'Should decode base64 eval');
+  });
+
+  test('DEOBFUSCATE: Base64 — does NOT fold Buffer.from without toString()', () => {
+    const { code, transforms } = deobfuscate(`const x = Buffer.from('Y2hpbGQ=', 'base64');`);
+    assertIncludes(code, "Buffer.from", 'Should NOT fold Buffer.from without .toString()');
+    assert(transforms.length === 0, `Expected 0 transforms, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Base64 — does NOT fold atob with variable', () => {
+    const { code, transforms } = deobfuscate(`const x = atob(someVar);`);
+    assertIncludes(code, 'atob(someVar)', 'Should NOT fold atob with variable');
+    assert(transforms.length === 0, `Expected 0 transforms, got ${transforms.length}`);
+  });
+
+  // =====================================================
+  // 4. HEX ARRAY MAP (5 tests)
+  // =====================================================
+
+  test('DEOBFUSCATE: Hex array — [0x...].map(c => String.fromCharCode(c)).join("")', () => {
+    const { code, transforms } = deobfuscate(`const x = [0x68, 0x65, 0x6c, 0x6c, 0x6f].map(c => String.fromCharCode(c)).join('');`);
+    assertIncludes(code, "'hello'", 'Should decode hex array map to hello');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'hex_array', `Expected type hex_array, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: Hex array — decimal numbers in array', () => {
+    const { code } = deobfuscate(`const x = [104, 101, 108, 108, 111].map(c => String.fromCharCode(c)).join('');`);
+    assertIncludes(code, "'hello'", 'Should decode decimal array map to hello');
+  });
+
+  test('DEOBFUSCATE: Hex array — does NOT fold with non-numeric element', () => {
+    const { code, transforms } = deobfuscate(`const x = [0x68, myVar, 0x6c].map(c => String.fromCharCode(c)).join('');`);
+    assert(transforms.length === 0, `Expected 0 transforms with variable in array, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Hex array — does NOT fold without join("")', () => {
+    const { code, transforms } = deobfuscate(`const x = [0x68, 0x65].map(c => String.fromCharCode(c));`);
+    assert(transforms.length === 0, `Expected 0 transforms without .join(''), got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Hex escaped strings — resolved by the parser, so deobfuscate is a no-op', () => {
+    const src = `const x = '\\x68\\x65\\x6c\\x6c\\x6f';`;
+    const { transforms } = deobfuscate(src);
+    // The module intentionally does NOT transform \x escapes — Acorn already
+    // resolves them, so downstream AST detectors see the decoded value. Prove
+    // both facts: no transform is claimed, and the parsed literal really is 'hello'.
+    assert(transforms.length === 0, `\\x escapes need no transform (Acorn resolves them), got ${transforms.length}`);
+    const literalValue = acorn.parse(src, { ecmaVersion: 2022 }).body[0].declarations[0].init.value;
+    assert(literalValue === 'hello', `Acorn must resolve the \\x escapes to "hello", got ${JSON.stringify(literalValue)}`);
+  });
+
+  // =====================================================
+  // 5. EDGE CASES (3 tests)
+  // =====================================================
+
+  test('DEOBFUSCATE: No obfuscation — code returned unchanged', () => {
+    const original = `const fs = require('fs');\nconst x = 42;\nconsole.log(x);`;
+    const { code, transforms } = deobfuscate(original);
+    assert(code === original, 'Unobfuscated code should be returned unchanged');
+    assert(transforms.length === 0, `Expected 0 transforms, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Partial obfuscation — only obfuscated parts resolved', () => {
+    const { code, transforms } = deobfuscate(`
+      const a = 'normal';
+      const b = 'child' + '_process';
+      const c = 42;
+    `);
+    assertIncludes(code, "'child_process'", 'Should fold the concat');
+    assertIncludes(code, "'normal'", 'Normal string should remain');
+    assertIncludes(code, '42', 'Number should remain');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Invalid/unparseable code — returns original', () => {
+    const broken = `const x = {{{{{ not valid JS`;
+    const { code, transforms } = deobfuscate(broken);
+    assert(code === broken, 'Invalid code should be returned unchanged');
+    assert(transforms.length === 0, `Expected 0 transforms for invalid code, got ${transforms.length}`);
+  });
+
+  // =====================================================
+  // 6. COMBINED / MULTI-TRANSFORM (bonus)
+  // =====================================================
+
+  test('DEOBFUSCATE: Multiple transforms in same file', () => {
+    const src = `
+      const a = 'ch' + 'ild';
+      const b = String.fromCharCode(101, 118, 97, 108);
+      const c = atob('ZnM=');
+    `;
+    const { code, transforms } = deobfuscate(src);
+    assertIncludes(code, "'child'", 'Should fold string concat');
+    assertIncludes(code, "'eval'", 'Should decode charcode');
+    assertIncludes(code, "'fs'", 'Should decode atob');
+    assert(transforms.length === 3, `Expected 3 transforms, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: transforms[] has correct position info', () => {
+    const src = `const x = 'he' + 'llo';`;
+    const { transforms } = deobfuscate(src);
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    const t = transforms[0];
+    assert(typeof t.start === 'number', 'start should be a number');
+    assert(typeof t.end === 'number', 'end should be a number');
+    assert(t.start >= 0, 'start should be >= 0');
+    assert(t.end > t.start, 'end should be > start');
+    assert(t.type === 'string_concat', `type should be string_concat, got ${t.type}`);
+    assertIncludes(t.before, "'he' + 'llo'", 'before should show original');
+    assert(t.after === "'hello'", `after should be 'hello', got ${t.after}`);
+  });
+
+  // =====================================================
+  // 7. CONST PROPAGATION (Phase 2)
+  // =====================================================
+
+  test('DEOBFUSCATE: Const propagation — resolves const ref in require', () => {
+    // Phase 1 needs a trigger (string concat of literals) to activate phase 2 const propagation
+    const src = `const trigger = 'hel' + 'lo';\nconst a = 'child_';\nconst b = 'process';\nrequire(a + b);`;
+    const { code, transforms } = deobfuscate(src);
+    assertIncludes(code, "'child_process'", 'Should propagate const and fold to child_process');
+    assert(transforms.length > 0, 'Should have transforms for const propagation');
+  });
+
+  test('DEOBFUSCATE: Const propagation — reassigned var NOT propagated', () => {
+    const src = `const a = 'safe';\nlet b = 'initial';\nb = 'changed';\nrequire(b);`;
+    const { code } = deobfuscate(src);
+    // b is reassigned, so it should NOT be propagated
+    assertIncludes(code, 'require(b)', 'Reassigned variable should NOT be propagated');
+  });
+
+  test('DEOBFUSCATE: Const propagation — does not propagate property access', () => {
+    const src = `const name = 'test';\nobj.name = 'other';`;
+    const { code } = deobfuscate(src);
+    assertIncludes(code, 'obj.name', 'Property access should not be propagated');
+  });
+
+  // =====================================================
+  // 8. HEX BUFFER DECODE
+  // =====================================================
+
+  test('DEOBFUSCATE: Hex Buffer — Buffer.from(hex).toString()', () => {
+    const { code, transforms } = deobfuscate(`const x = Buffer.from('6576616c', 'hex').toString();`);
+    assertIncludes(code, "'eval'", 'Should decode hex Buffer.from to eval');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'hex', `Expected type hex, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: Hex Buffer — non-printable result NOT folded', () => {
+    // 0x01 0x02 0x03 are control chars
+    const { code, transforms } = deobfuscate(`const x = Buffer.from('010203', 'hex').toString();`);
+    assertIncludes(code, "Buffer.from", 'Should NOT fold hex with non-printable result');
+    assert(transforms.length === 0, `Expected 0 transforms for non-printable, got ${transforms.length}`);
+  });
+
+  // =====================================================
+  // 9. isPrintable edge cases
+  // =====================================================
+
+  test('DEOBFUSCATE: atob with non-printable result NOT folded', () => {
+    // Base64 of binary data with control characters
+    const { transforms } = deobfuscate(`const x = atob('AQIDBA==');`);
+    assert(transforms.length === 0, 'atob with non-printable result should NOT fold');
+  });
+
+  test('DEOBFUSCATE: Base64 with valid printable result IS folded', () => {
+    const { code, transforms } = deobfuscate(`const x = atob('cmVxdWlyZQ==');`);
+    assertIncludes(code, "'require'", 'Should decode atob to require');
+    assert(transforms.length === 1, 'Should have 1 transform');
+  });
+
+  // =====================================================
+  // 10. EMPTY / EDGE CASES
+  // =====================================================
+
+  test('DEOBFUSCATE: Empty hex array returns null (no transform)', () => {
+    const { transforms } = deobfuscate(`const x = [].map(c => String.fromCharCode(c)).join('');`);
+    assert(transforms.length === 0, 'Empty array should produce no transforms');
+  });
+
+  test('DEOBFUSCATE: Hex array map without join does NOT fold', () => {
+    const { transforms } = deobfuscate(`const x = [0x68, 0x65].map(c => String.fromCharCode(c));`);
+    assert(transforms.length === 0, 'Array map without .join should not fold');
+  });
+
+  test('DEOBFUSCATE: atob with multiple args does NOT fold', () => {
+    // atob only takes one arg; if somehow parsed with more, it shouldn't fold
+    const { transforms } = deobfuscate(`const x = atob('aGVsbG8=', 'extra');`);
+    assert(transforms.length === 0, 'atob with multiple args should not fold');
+  });
+
+  test('DEOBFUSCATE: String with special chars is properly escaped', () => {
+    const { code } = deobfuscate(`const x = 'line1\\n' + 'line2';`);
+    assertIncludes(code, "'line1\\nline2'", 'Should preserve newline escape in folded string');
+  });
+
+  // =====================================================
+  // 11. TEMPLATE LITERAL FOLDING (v2.5.13)
+  // =====================================================
+
+  test('DEOBFUSCATE: Template literal — no expressions → string', () => {
+    const { code, transforms } = deobfuscate('const x = `child_process`;');
+    assertIncludes(code, "'child_process'", 'Should fold template literal without expressions');
+    assert(transforms.length === 1, `Expected 1 transform, got ${transforms.length}`);
+    assert(transforms[0].type === 'template_literal', `Expected type template_literal, got ${transforms[0].type}`);
+  });
+
+  test('DEOBFUSCATE: Template literal — with resolvable expression', () => {
+    const { code, transforms } = deobfuscate("const x = `child_${'process'}`;");
+    assertIncludes(code, "'child_process'", 'Should fold template with literal expression');
+    assert(transforms.length >= 1, `Expected at least 1 transform, got ${transforms.length}`);
+  });
+
+  test('DEOBFUSCATE: Template literal — nested concat in expression', () => {
+    const { code } = deobfuscate("const x = `${'child' + '_process'}`;");
+    assertIncludes(code, "'child_process'", 'Should fold nested concat in template expression');
+  });
+
+  test('DEOBFUSCATE: Template literal — unresolvable expression NOT folded', () => {
+    const { code, transforms } = deobfuscate('const x = `prefix_${someVar}`;');
+    assertIncludes(code, 'someVar', 'Template with variable should NOT be folded');
+    const templateTransform = transforms.find(t => t.type === 'template_literal');
+    assert(!templateTransform, 'Should NOT have template_literal transform for unresolvable');
+  });
+
+  test('DEOBFUSCATE: Template literal — in BinaryExpression concat', () => {
+    const { code } = deobfuscate("const x = `child` + '_process';");
+    assertIncludes(code, "'child_process'", 'Should fold template + string concat');
+  });
+
+  // =====================================================
+  // 12. ARRAY DESTRUCTURING CONST PROPAGATION (v2.5.13)
+  // =====================================================
+
+  test('DEOBFUSCATE: Array destructuring — const [a,b] = ["child_","process"]', () => {
+    // Need a phase 1 trigger to activate phase 2
+    const src = `const trigger = 'he' + 'llo';\nconst [a, b] = ['child_', 'process'];\nrequire(a + b);`;
+    const { code } = deobfuscate(src);
+    assertIncludes(code, "'child_process'", 'Should propagate array destructured consts and fold');
+  });
+
+  test('DEOBFUSCATE: Array destructuring — partial elements (hole skipped, x propagated)', () => {
+    const src = `const trigger = 'he' + 'llo';\nconst [x, , z] = ['eval', 42, 'safe'];\nconsole.log(x);`;
+    const { code, transforms } = deobfuscate(src);
+    // x (='eval') must be propagated into the console.log despite the hole in the
+    // destructuring pattern. Asserting transforms.length>0 was satisfied by the
+    // 'he'+'llo' trigger alone; assert the actual propagation instead.
+    assertIncludes(code, "console.log('eval')", 'x must be propagated past the array hole');
+    assert(transforms.some(t => t.type === 'const_propagation'),
+      'The propagation itself (not just the trigger concat) must be recorded as a const_propagation transform');
+  });
+
+  test('DEOBFUSCATE: Array destructuring — non-string elements skipped', () => {
+    const src = `const trigger = 'he' + 'llo';\nconst [a, b] = [42, true];\nconsole.log(a);`;
+    const { code } = deobfuscate(src);
+    // 42 and true are not strings, should not be propagated
+    assertIncludes(code, 'console.log(a)', 'Non-string elements should not be propagated');
+  });
+}
+
+module.exports = { runDeobfuscateTests };

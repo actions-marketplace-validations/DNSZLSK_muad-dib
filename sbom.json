@@ -1,0 +1,4870 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:c0e8511d-9043-4c45-8524-9d003919a8b0",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-06-14T19:10:03.779Z",
+    "tools": [
+      {
+        "vendor": "muaddib",
+        "name": "muaddib",
+        "version": "2.11.117"
+      }
+    ],
+    "component": {
+      "bom-ref": "scanned-package",
+      "type": "library",
+      "name": "muaddib-scanner",
+      "version": "2.11.117",
+      "purl": "pkg:npm/muaddib-scanner@2.11.117"
+    }
+  },
+  "vulnerabilities": [
+    {
+      "bom-ref": "muaddib-vuln-1",
+      "id": "MUADDIB-AST-059",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Pattern malveillant \"systemd_persistence\" detecte.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "systemd_persistence"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1543.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\deploy.sh"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-2",
+      "id": "MUADDIB-AST-006",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Dynamic require() with variable argument (module name obfuscation).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "dynamic_require"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\ab-test-shadow.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-3",
+      "id": "MUADDIB-AST-006",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Dynamic require() with member expression argument (object property obfuscation).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "dynamic_require"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\benchmark.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-4",
+      "id": "MUADDIB-AST-006",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Dynamic require() with computed argument (possible decode obfuscation).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "dynamic_require"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\check-deps-typosquats.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-5",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\git-vs-npm-diff.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-6",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\sample-npm-random.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-7",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\track-c-add-gt-entries.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-8",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\commands\\evaluate.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-9",
+      "id": "MUADDIB-AST-028",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Git hook injection: writeFileSync() writes to .git/hooks/. Persistence technique.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "git_hooks_injection"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1546.004"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\commands\\hooks-init.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-10",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Dynamic access to process.env (variable key).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\env-loader.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-11",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\intent-graph.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-12",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\feature-extractor.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-13",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Access to sensitive variable process.env.ANTHROPIC_API_KEY.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-14",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-15",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \".npmrc\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-16",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \".ssh\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-17",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \"/etc/passwd\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-18",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Access to sensitive variable process.env.ANTHROPIC_API_KEY.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\classify.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-19",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\classify.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-20",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Access to sensitive variable process.env.ANTHROPIC_API_KEY.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\daemon.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-21",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\ingestion.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-22",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Dynamic access to process.env (variable key).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\memory-governor.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-23",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\queue.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-24",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\temporal.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-25",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\pipeline\\processor.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-26",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \"Shai-Hulud\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\compound-triggers.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-27",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \".npmrc\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\index.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-28",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"oastify.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-29",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"oast.fun\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-30",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"oast.me\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-31",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"oast.live\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-32",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"oast.online\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-33",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"burpcollaborator.net\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-34",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"interact.sh\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-35",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"webhook.site\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-36",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"pipedream.net\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-37",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"requestbin.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-38",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"hookbin.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-39",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"canarytokens.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-40",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"217.69.3.218\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-41",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 217.69.3.218 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-42",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"217.69.3.152\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-43",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 217.69.3.152 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-44",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"199.247.10.166\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-45",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 199.247.10.166 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-46",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"199.247.13.106\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-47",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 199.247.13.106 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-48",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"140.82.52.31\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-49",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 140.82.52.31 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-50",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"45.32.150.251\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-51",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 45.32.150.251 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-52",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"icp0.io\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-53",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"ic0.app\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-54",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"hackmoltrepeat.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-55",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"scan.aquasecurtiy.org\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-56",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"api.telegram.org\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-57",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"checkmarx.zone\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-58",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"45.148.10.212\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-59",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 45.148.10.212 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-60",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious C2/exfiltration domain \"83.142.209.11\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-61",
+      "id": "MUADDIB-AST-094",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Hardcoded bare IPv4 literal 83.142.209.11 — direct-IP exfil endpoint (no DNS, no OAST cover). Classic C2 / dep-confusion pattern.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "direct_ip_exfil"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-62",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"ngrok.io\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-63",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"ngrok-free.app\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-64",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"serveo.net\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-65",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"localhost.run\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-66",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"loca.lt\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-67",
+      "id": "MUADDIB-AST-032",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious tunnel/proxy domain \"trycloudflare.com\" found in string literal.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_domain"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1071.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-68",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\scoring.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-69",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sdk-destination.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-70",
+      "id": "MUADDIB-AST-074",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "4 chained .replace() calls detected — potential string mutation obfuscation (could not fully resolve).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "string_mutation_obfuscation"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\download.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-71",
+      "id": "MUADDIB-AST-074",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "5 chained .replace() calls detected — potential string mutation obfuscation (could not fully resolve).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "string_mutation_obfuscation"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\download.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-72",
+      "id": "MUADDIB-AST-041",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Credential regex patterns (token/password/secret/Bearer) + network call in same file — stream data credential harvesting.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "credential_regex_harvest"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\http-limiter.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-73",
+      "id": "MUADDIB-AST-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Reference to \".npmrc\" detected.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "sensitive_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\registry-auth.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-74",
+      "id": "MUADDIB-AST-002",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Access to sensitive variable process.env.NPM_TOKEN.",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "env_access"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1552.001"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\registry-auth.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-75",
+      "id": "MUADDIB-AST-053",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Unicode variation selector decoder: .codePointAt() + 0xFE00/0xE0100 constants — likely legitimate Unicode processing (text formatting, font rendering).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "unicode_variation_decoder"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1140"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\shared\\unicode-invisibles.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-76",
+      "id": "MUADDIB-AST-074",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "4 chained .replace() calls detected — potential string mutation obfuscation (could not fully resolve).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "string_mutation_obfuscation"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\utils.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-77",
+      "id": "MUADDIB-AST-074",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "5 chained .replace() calls detected — potential string mutation obfuscation (could not fully resolve).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "string_mutation_obfuscation"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\utils.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-78",
+      "id": "MUADDIB-FLOW-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious flow: command output (child_process.execSync, child_process.execSync) + network send (https.get, https.get)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "low",
+          "method": "other",
+          "score": 1,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_dataflow"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "scripts\\ossf-benchmark.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-79",
+      "id": "MUADDIB-FLOW-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious flow: command output (child_process.execSync) + network send (https.get)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_dataflow"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\commands\\evaluate.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-80",
+      "id": "MUADDIB-FLOW-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "Suspicious flow: credentials read (ANTHROPIC_API_KEY, ANTHROPIC_API_KEY) + network send (fetch)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "suspicious_dataflow"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1041"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\llm-detective.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-81",
+      "id": "MUADDIB-ENTROPY-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "High entropy string (5.55 bits, 335 chars) — possible base64/hex/encrypted payload",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "medium",
+          "method": "other",
+          "score": 3,
+          "vector": "muaddib-confidence:medium"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "high_entropy_string"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "medium"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1027"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\monitor\\daemon.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "3"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-82",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"OrDeR_7077\" (campaign: axios-2026-03) — XOR key used by Axios setup.js dropper (also seen in csec autodelete family)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": ".build_dossier.py"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-83",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"rsp_peinject\" (campaign: axios-2026-03) — RAT command for Windows PE injection (Axios family)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": ".build_dossier.py"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-84",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"defi-threat-scanner\" (campaign: trapdoor-2026-05) — TrapDoor npm package name (one of the 21 compromised on npm) — HIGH for same reason as eth-security-auditor",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\ml\\feature-extractor.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-85",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"OrDeR_7077\" (campaign: axios-2026-03) — XOR key used by Axios setup.js dropper (also seen in csec autodelete family)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\response\\playbooks.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-86",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"checkmarx.zone\" (campaign: teampcp-2026) — TeamPCP exfil C2 (typosquat of checkmarx.com)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\response\\playbooks.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-87",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"getSignaturesForAddress\" (campaign: glassworm-2026) — Solana RPC method used by GlassWorm to read C2 commands from blockchain",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\response\\playbooks.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-88",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"OrDeR_7077\" (campaign: axios-2026-03) — XOR key used by Axios setup.js dropper (also seen in csec autodelete family)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\rules\\index.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-89",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"getSignaturesForAddress\" (campaign: glassworm-2026) — Solana RPC method used by GlassWorm to read C2 commands from blockchain",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "high",
+          "method": "other",
+          "score": 10,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\rules\\index.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "10"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-90",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"OrDeR_7077\" (campaign: axios-2026-03) — XOR key used by Axios setup.js dropper (also seen in csec autodelete family)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\compound-triggers.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-91",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"checkmarx.zone\" (campaign: teampcp-2026) — TeamPCP exfil C2 (typosquat of checkmarx.com)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-92",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"scan.aquasecurtiy.org\" (campaign: teampcp-2026) — Trivy exfil C2 (typosquat of aquasecurity.com)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-93",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"hackmoltrepeat.com\" (campaign: teampcp-2026) — TeamPCP secondary C2",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-94",
+      "id": "MUADDIB-IOC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": "String IOC match: \"recv.hackmoltrepeat.com\" (campaign: teampcp-2026) — TeamPCP secondary C2 (receive endpoint subdomain)",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "ioc_string_match"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1195.002"
+        },
+        {
+          "name": "muaddib:file",
+          "value": "src\\sandbox\\network-allowlist.js"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "muaddib-vuln-95",
+      "id": "MUADDIB-PYSRC-001",
+      "source": {
+        "name": "MUADDIB",
+        "url": "https://github.com/DNSZLSK/muad-dib"
+      },
+      "description": ".build_dossier.py: exec()/eval() at module level — direct code execution on import or pip install (RCE).",
+      "ratings": [
+        {
+          "source": {
+            "name": "MUADDIB"
+          },
+          "severity": "critical",
+          "method": "other",
+          "score": 25,
+          "vector": "muaddib-confidence:high"
+        }
+      ],
+      "affects": [
+        {
+          "ref": "scanned-package"
+        }
+      ],
+      "properties": [
+        {
+          "name": "muaddib:risk_domain",
+          "value": "malware"
+        },
+        {
+          "name": "muaddib:type",
+          "value": "import_time_exec"
+        },
+        {
+          "name": "muaddib:confidence",
+          "value": "high"
+        },
+        {
+          "name": "muaddib:mitre",
+          "value": "T1059.006"
+        },
+        {
+          "name": "muaddib:file",
+          "value": ".build_dossier.py"
+        },
+        {
+          "name": "muaddib:points",
+          "value": "25"
+        }
+      ]
+    }
+  ]
+}

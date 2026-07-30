@@ -1,13 +1,32 @@
+/*
+ * MUAD'DIB — Supply-chain threat detection for npm & PyPI
+ * Copyright (C) 2026 DNSZLSK
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License version 3,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
 const fs = require('fs');
 const path = require('path');
 const nodeCrypto = require('crypto');
 const { loadCachedIOCs } = require('../ioc/updater.js');
 const { findFiles } = require('../utils.js');
+const { getMaxFileSize } = require('../shared/constants.js');
 
 // Hash cache: filePath -> { hash, mtime }
 const hashCache = new Map();
 const MAX_CACHE_SIZE = 10000;
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 async function scanHashes(targetPath) {
   const threats = [];
@@ -57,7 +76,7 @@ async function scanHashes(targetPath) {
 function computeHashCached(filePath) {
   try {
     const stat = fs.statSync(filePath);
-    if (stat.size > MAX_FILE_SIZE) return null;
+    if (stat.size > getMaxFileSize()) return null;
     const mtime = stat.mtimeMs;
 
     // Check the cache

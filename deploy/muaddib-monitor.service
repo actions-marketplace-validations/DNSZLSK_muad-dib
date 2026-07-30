@@ -1,0 +1,108 @@
+[Unit]
+Description=MUAD'DIB Registry Monitor
+Documentation=https://github.com/DNSZLSK/muad-dib
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=muaddib
+Group=muaddib
+WorkingDirectory=/opt/muaddib
+# Self-heal ownership of the runtime dirs the daemon writes as muaddib: state (data/),
+# logs/, and the tarball archive/ (33G/94k files). The leading + runs the chown as root
+# regardless of User=muaddib, so it recovers from an external ownership drift (e.g. a
+# maintenance/test run under another user). archive/ is included after an incident where a
+# broad `chown -R ubuntu /opt/muaddib` left the daemon unable to write package snapshots.
+# chown -R over archive/ is ~0.5s (bound by inode count, not the 33G) — negligible per start.
+ExecStartPre=+/bin/chown -R muaddib:muaddib /opt/muaddib/data /opt/muaddib/logs /opt/muaddib/archive
+ExecStart=/usr/bin/node --expose-gc --max-old-space-size=8192 src/monitor.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=muaddib-monitor
+
+Environment=NODE_ENV=production
+
+# Archive retention — belt-and-suspenders with src/monitor/tarball-archive.js default.
+# Math: ~4.5GB/day average, 96GB disk → 7d ≈ 53% baseline, 14d ≈ 86% (no margin).
+Environment=MUADDIB_ARCHIVE_RETENTION_DAYS=7
+# Optional disk-space gate (default 5GB free required before archiving):
+# Environment=MUADDIB_ARCHIVE_MIN_FREE_GB=5
+
+# FPR plan 2026 - 5 gates ARE NOW DEFAULT ON since v2.11.9.
+# Measured impact (v2.11.4 corpus, 1054 packages, gates ON vs OFF):
+#   FPR curated    15.6%  -> 9.36%  (-6.24 pp)
+#   FPR random      7.0%  -> 2.0%   (-5.00 pp)
+#   TPR@3 / TPR@20             unchanged (93.85% / 86.15%)
+#   ADR adversarial            unchanged (96.26%)
+# To OPT OUT of any individual gate, set its env var to 0 below:
+#   MUADDIB_FN_REACHABILITY, MUADDIB_DECAY, MUADDIB_MATURE_CAP,
+#   MUADDIB_METADATA_FACTOR, MUADDIB_DELTA_MODE
+# To skip ALL registry-fetching gates at once (air-gap, offline CI):
+#   MUADDIB_NO_REGISTRY_FETCH=1
+
+EnvironmentFile=-/opt/muaddib/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/muaddib/data /opt/muaddib/logs
+PrivateTmp=true
+
+# ── Hardening parity with muaddib-scrape.service (M5, audit 2026-07) ──
+# Applied + validated on the production VPS tier-by-tier (a full sandbox run + gVisor +
+# a registry fetch were confirmed working after each tier's restart). Unlike the oneshot
+# scraper, the monitor launches the Docker sandbox (docker run → /var/run/docker.sock);
+# container isolation is dockerd's, so these restrict only the node + docker-CLI
+# processes, not the containers. None of these touches the memory limits below.
+# Tier A — node + docker-CLI never exercise these:
+LockPersonality=true
+RestrictRealtime=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+PrivateDevices=true
+SystemCallArchitectures=native
+# Tier B — docker socket = AF_UNIX, registry = AF_INET/6 (monitor does not use netlink);
+# cgroup RO does NOT weaken MemoryMax (systemd enforces it on the cgroup, not the process):
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectControlGroups=true
+# Tier C — the docker CLI does not create namespaces (dockerd does); a full sandbox cycle
+# was verified after adding this:
+RestrictNamespaces=true
+
+# Memory limits (OOM fix — belt-and-suspenders with the in-process RSS circuit
+# breaker in src/monitor/daemon.js). The monitor was OOM-killed by the kernel every
+# ~1.5-3.5h (RSS peak 10.3G on the 11.7G box) from an off-heap leak the heap-only
+# breaker was blind to. MemoryHigh (soft) triggers kernel reclaim/throttle so the
+# in-process EMERGENCY handler (kills orphaned sandbox containers + scan workers)
+# gets a window to act; MemoryMax (hard) forces a clean cgroup-scoped restart of
+# THIS service before the box-wide OOM-killer picks a random victim. MemorySwapMax=0
+# keeps a leak from being masked by swap thrash. Keep MemoryHigh < MemoryMax, and
+# co-defined with MUADDIB_RSS_LIMIT_MB (the in-process breaker fires at ~8500MB,
+# just under MemoryHigh).
+Environment=MUADDIB_RSS_LIMIT_MB=8500
+MemoryHigh=8.5G
+MemoryMax=9.5G
+MemorySwapMax=0
+
+# ── Off-heap RSS mitigation (P1) ──
+# The OOM is driven by RSS creep the heap-only breaker can't see (heap ~41% while RSS
+# hits 91%). Scan workers are one-shot worker_threads, so their isolates are freed at
+# exit — the prime remaining suspect is glibc per-thread malloc arenas NOT returning
+# freed memory to the OS (classic RSS creep with a busy thread pool). Cap the arenas to
+# bound it. MUST be set here: glibc reads MALLOC_ARENA_MAX at exec, so it cannot be set
+# from JS. Confirm the effect post-deploy in data/mem-trend.jsonl (rss vs external/
+# arrayBuffers over a few hours).
+Environment=MALLOC_ARENA_MAX=2
+# If MALLOC_ARENA_MAX alone is insufficient, reduce peak concurrent native memory by
+# lowering the scan concurrency (code default 16; the knob already exists, no redeploy
+# of code needed). NOTE: 8 ~halves peak worker memory but also ~halves throughput →
+# risk of an ingestion backlog + temporal load-shed. Tune against mem-trend.jsonl, do
+# not set blindly. Uncomment to apply:
+# Environment=MUADDIB_MAX_CONCURRENCY=8
+
+[Install]
+WantedBy=multi-user.target

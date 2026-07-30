@@ -1,6 +1,6 @@
 {
   "name": "muaddib-scanner",
-  "version": "1.6.9",
+  "version": "2.11.179",
   "description": "Supply-chain threat detection & response for npm & PyPI/Python",
   "main": "src/index.js",
   "bin": {
@@ -8,9 +8,19 @@
   },
   "scripts": {
     "test": "node tests/run-tests.js",
+    "test:integration": "node tests/run-tests-integration.js",
+    "test:regression-check": "node scripts/regression-check.js",
+    "fp-clusters": "node scripts/analyze-fp-clusters.js",
     "scan": "node bin/muaddib.js scan .",
     "update": "node bin/muaddib.js update",
-    "lint": "eslint src bin --ext .js"
+    "lint": "eslint src bin --ext .js",
+    "ci:local": "node scripts/check-deps-typosquats.js && node scripts/check-no-tracked-node-modules.js && npm audit --audit-level=high && npm run docs:stats:check && npm test",
+    "docs:stats": "node scripts/collect-stats.js && node scripts/sync-stats.js",
+    "docs:stats:tests": "node scripts/collect-stats.js --with-tests && node scripts/sync-stats.js",
+    "docs:stats:check": "node scripts/collect-stats.js --check && node scripts/sync-stats.js --check",
+    "version": "npm run docs:stats && git diff --name-only | xargs -r git add",
+    "compress-iocs": "node -e \"const fs=require('fs');const zlib=require('zlib');zlib.gzip(fs.readFileSync('src/ioc/data/iocs.json'),(e,b)=>{if(e)throw e;fs.writeFileSync('iocs.json.gz',b);console.log('Compressed: '+b.length+' bytes')})\"",
+    "prepublishOnly": "node -e \"if(!process.env.CI){console.error('ERR: Publish via CI workflow (tag v* push). Local publishes are disabled.');process.exit(1)}\""
   },
   "keywords": [
     "security",
@@ -29,7 +39,7 @@
     "threat-intelligence"
   ],
   "author": "DNSZLSK",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DNSZLSK/muad-dib.git"
@@ -39,21 +49,20 @@
     "url": "https://github.com/DNSZLSK/muad-dib/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "@inquirer/prompts": "8.2.0",
-    "acorn": "8.15.0",
-    "acorn-walk": "8.3.4",
-    "adm-zip": "^0.5.16",
-    "chalk": "5.6.2",
-    "js-yaml": "4.1.1",
-    "yargs": "18.0.0"
+    "@inquirer/prompts": "8.5.2",
+    "acorn": "8.17.0",
+    "acorn-walk": "8.3.5",
+    "adm-zip": "0.6.0",
+    "js-yaml": "5.2.1",
+    "web-tree-sitter": "^0.26.9"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.2",
-    "eslint": "10.0.0",
-    "eslint-plugin-security": "^3.0.1",
-    "globals": "17.3.0"
+    "@eslint/js": "10.0.1",
+    "eslint": "10.6.0",
+    "eslint-plugin-security": "^4.0.0",
+    "globals": "17.7.0"
   }
 }
