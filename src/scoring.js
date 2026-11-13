@@ -219,21 +219,9 @@ const SINGLE_FIRE_MIN_SEVERITY_RANK = 2; // HIGH
 // PyPI packages emit no `lifecycle_script` (an npm-only signal), so confirmed
 // import-time RCE would otherwise be capped at 35 and buried in the benign 25-35
 // cluster. These types are emitted ONLY by the Python scanners (python-source.js /
-// python-ast-detectors) on .py files, so their presence is itself the PyPI signal —
+// python-ast-detectors) on .py files and pyproject.toml, so their presence is itself the PyPI signal -
 // no ecosystem flag needed, and npm packages are unaffected (they never emit them).
-const PYPI_IMPORT_TIME_RCE_TYPES = new Set([
-  'import_time_exec',
-  'import_time_subprocess',
-  'import_time_os_system',
-  'import_time_deserialization',
-  'import_time_fetch_exec',
-  'fetch_to_fork_exec_inline',
-  'pyast_module_level_exec',
-  'pyast_module_level_subprocess_shell',
-  'pyast_module_level_unsafe_deserialization',
-  'pyast_setup_cmdclass_override',
-  'pyast_ctypes_shellcode_load'
-]);
+const { PYPI_IMPORT_TIME_RCE_TYPES } = require('./shared/constants.js');
 
 // Track R: the reputation multiplier (applyReputationFactor) may suppress noise on
 // mature/popular packages down to ×0.10, but it must never pull a CONFIRMED malice
@@ -1150,6 +1138,67 @@ function _hasProvenExfilSink(threats) {
   return threats.some(t => PROVEN_EXFIL_SINK_TYPES.has(t.type) && t.severity !== 'LOW');
 }
 
+// ── String-IOC corroboration (corpus audit 2026-11-03) ──
+// A curated string IOC is decisive only when the package gives a second,
+// independent reason to believe it. Measured on 30 582 corpus tarballs: of ~55
+// with a CRITICAL ioc_string_match, ~53 were benign, almost all security tools
+// quoting IOCs in their detectors / pattern lists / test fixtures
+// (@hasna/shield, @lateos/npm-scan, sunglasses, prismor, llm-safe-haven,
+// ansible-security-scanner, unsloth-zoo, skilltotal, buzur) plus a generic
+// string matching invoice numbers. A lone match floored each of them to 75.
+//
+// Independent evidence, decided at PACKAGE level (an IOC in a.js with the
+// exfiltration in b.js is still corroborated):
+//   - behavioral: any non-LOW finding whose type is in this fixed list, or a
+//     compound. The string IOC itself never counts.
+//   - multiplicity: >= 2 distinct CRITICAL strings, all of ONE campaign family
+//     (a build carries several artifacts of its own campaign; GT-099 has three).
+//     Strings of several unrelated families are what an IOC catalog looks like,
+//     so they do not corroborate each other.
+// Without evidence, CRITICAL matches keep their severity and their weight but are
+// marked iocUncorroborated: no single-fire floor, no MT-1 ceiling bypass. There
+// is deliberately NO path that lowers the severity: without behavioral evidence
+// an IOC-only sample and a defender's IOC catalog are structurally alike, and any
+// downgrade rule (e.g. "N unrelated families -> LOW") is bought by adding decoy
+// strings of other campaigns. The worst an attacker can obtain here is losing
+// the floor; the CRITICAL weight alone keeps the package above the alert threshold.
+const STRING_IOC_CORROBORATION_TYPES = new Set([
+  ...HIGH_CONFIDENCE_MALICE_TYPES,
+  ...PROVEN_EXFIL_SINK_TYPES,
+  'known_malicious_hash', 'ioc_match', 'dependency_ioc_match'
+]);
+STRING_IOC_CORROBORATION_TYPES.delete('ioc_string_match');
+
+function _stringIocFamily(t) {
+  if (typeof t.family === 'string' && t.family) return t.family;
+  const c = typeof t.campaign === 'string' && t.campaign ? t.campaign : 'unknown';
+  return c.replace(/-\d{4}(-\d{2})?$/, '');
+}
+
+function applyStringIocCorroboration(threats) {
+  if (!Array.isArray(threats)) return { outcome: 'none' };
+  const critical = threats.filter(t => t && t.type === 'ioc_string_match' && t.severity === 'CRITICAL');
+  if (critical.length === 0) return { outcome: 'none' };
+
+  const behavioral = threats.some(t => t && t.type !== 'ioc_string_match' && t.severity !== 'LOW' &&
+    (t.compound === true || STRING_IOC_CORROBORATION_TYPES.has(t.type)));
+  const families = new Map();
+  for (const t of critical) {
+    const f = _stringIocFamily(t);
+    if (!families.has(f)) families.set(f, new Set());
+    families.get(f).add(t.evidence);
+  }
+
+  const multiplicity = families.size === 1 && [...families.values()][0].size >= 2;
+  if (behavioral || multiplicity) return { outcome: 'corroborated', behavioral, multiplicity };
+
+  for (const t of critical) {
+    t.iocUncorroborated = true;
+    t.message += ' [uncorroborated: no independent malice evidence in the package, no score floor]';
+  }
+  return { outcome: 'uncorroborated' };
+}
+
 function applyFPReductions(threats, reachableFiles, packageName, packageDeps, reachableFunctions) {
   // Initialize reductions audit trail on each threat
   // Store original severity before any FP reductions, so compound
@@ -1718,8 +1767,9 @@ function calculateRiskScore(deduped, intentResult) {
   // (GT-099 eth-security-auditor). Measured 0 ioc_string_match across 869 benign
   // packages (545 curated + 200 random npm + 124 PyPI) — zero corpus FP cost.
   // HIGH-severity strings (weaker, shared artifacts) deliberately do NOT void the cap.
+  // Uncorroborated matches (applyStringIocCorroboration) do not void the cap.
   const _hasCriticalStringIOC = deduped.some(t =>
-    t.type === 'ioc_string_match' && t.severity === 'CRITICAL'
+    t.type === 'ioc_string_match' && t.severity === 'CRITICAL' && !t.iocUncorroborated
   );
   if (!_hasLifecycle && !_hasHC && !_hasCompound && !_hasStagedC2 && !_hasPyPIImportRCE &&
       !_hasCriticalStringIOC) {
@@ -2255,6 +2305,8 @@ function applySingleFireCriticalFloor(result) {
   const triggers = [];
   for (const t of result.threats) {
     if (!SINGLE_FIRE_CRITICAL_TYPES.has(t.type)) continue;
+    // Uncorroborated string IOC (applyStringIocCorroboration): no floor.
+    if (t.type === 'ioc_string_match' && t.iocUncorroborated) continue;
     const rank = _SEV_RANK[t.severity];
     const minRank = SINGLE_FIRE_TYPE_MIN_RANK[t.type] !== undefined
       ? SINGLE_FIRE_TYPE_MIN_RANK[t.type]
@@ -2287,27 +2339,21 @@ const _CRITICAL_PRELOAD_TYPES = new Set([
   'sandbox_network_after_sensitive_read',
   'sandbox_known_exfil_domain',
   'sandbox_timer_delay_critical',
-  'canary_exfiltration',
-  'sandbox_honey_read',
-  'sandbox_persistence_write',
-  'sandbox_npm_self_invoke',
-  'sandbox_runtime_deobfuscation_executed'
+  'canary_exfiltration'
 ]);
 
 const _HIGH_COMPOUND_TYPES = new Set([
   'sandbox_preload_sensitive_read',
   'sandbox_exec_suspicious',
-  'sandbox_network_outlier',
-  'sandbox_execve_chain_depth',
-  'sandbox_credential_target_read'
+  'sandbox_network_outlier'
 ]);
 
 /**
  * Classify a sandbox run into a verdict and apply the score contract.
  *
  * Verdicts:
- *   - MALICIOUS_CONFIRMED: >=1 critical preload signal OR honey read correlated
- *     with non-registry outbound. Floor score at 75.
+ *   - MALICIOUS_CONFIRMED: >=1 critical preload signal (sensitive read then network,
+ *     known exfil domain, critical timer delay, canary exfiltration). Floor score at 75.
  *   - MALICIOUS_CHAIN: >=2 high-severity compound signals in the same run.
  *     Floor score at 60.
  *   - CLEAN_HIGH_CONFIDENCE: install completed, no fingerprint detected, no
@@ -2342,7 +2388,7 @@ function applySandboxVerdict(result, sandboxResult) {
   const criticalSignals = findingTypes.filter(t => _CRITICAL_PRELOAD_TYPES.has(t));
   const highSignals = findingTypes.filter(t => _HIGH_COMPOUND_TYPES.has(t));
 
-  // MALICIOUS_CONFIRMED: any single critical preload/honey signal is enough.
+  // MALICIOUS_CONFIRMED: any single critical preload signal is enough.
   if (criticalSignals.length >= 1) {
     const newScore = Math.max(oldScore, SANDBOX_VERDICT_CONFIRMED_FLOOR);
     result.summary.riskScore = newScore;
@@ -2423,5 +2469,6 @@ module.exports = {
   isPackageLevelThreat, computeGroupScore, computeGroupScoreDecay,
   applyFPReductions, applyCompoundBoosts, calculateRiskScore,
   applyConfigOverrides, resetConfigOverrides, getSeverityWeights, getRiskThresholds,
-  applyContextualFPCaps, applySingleFireCriticalFloor, applyReputationFactor
+  applyContextualFPCaps, applySingleFireCriticalFloor, applyReputationFactor,
+  applyStringIocCorroboration, STRING_IOC_CORROBORATION_TYPES
 };

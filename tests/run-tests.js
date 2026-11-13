@@ -53,6 +53,8 @@ const { runPhantomGypTests } = require('./scanner/phantom-gyp.test');
 const { runNativeDropExecTests } = require('./scanner/native-drop-exec.test');
 const { runBinarySourceTests } = require('./scanner/binary-source.test');
 const { runTyposquatTests } = require('./scanner/typosquat.test');
+const { runAuditTyposquatFindingsTests } = require('./audit-2026-05/typosquat-findings.test');
+const { runAuditMonorepoFindingsTests } = require('./audit-2026-05/monorepo-findings.test');
 const { runDependencyTests } = require('./scanner/dependency.test');
 const { runIocStringsTests } = require('./scanner/ioc-strings.test');
 const { runAntiForensicTests } = require('./scanner/anti-forensic.test');
@@ -62,6 +64,8 @@ const { runEntropyTests } = require('./scanner/entropy.test');
 const { runPythonTests } = require('./scanner/python.test');
 const { runPythonSourceTests } = require('./scanner/python-source.test');
 const { runPythonAstTests } = require('./scanner/python-ast.test');
+const { runPyprojectCmdclassTests } = require('./scanner/pyproject-cmdclass.test');
+const { runPthPayloadTests } = require('./scanner/pth-payload.test');
 const { runPyPIRegistryTests } = require('./scanner/pypi-registry.test');
 const { runPyPIMaintainerTests } = require('./scanner/pypi-maintainer.test');
 const { runPyPIReleaseZeroTests } = require('./scanner/pypi-release-zero.test');
@@ -86,6 +90,7 @@ const { runAstReconTests } = require('./scanner/ast-recon.test');
 const { runCryptoExfilTests } = require('./scanner/crypto-exfil.test');
 const { runCryptoExfilPythonTests } = require('./scanner/crypto-exfil-python.test');
 const { runAstBypassRegressionTests } = require('./scanner/ast-bypass-regression.test');
+const { runAstParserDivergenceTests } = require('./scanner/ast-parser-divergence.test');
 const { runIntentGraphTests } = require('./scanner/intent-graph.test');
 const { runTrustedDepDiffTests } = require('./scanner/trusted-dep-diff.test');
 
@@ -103,7 +108,15 @@ const { runWebhookTests } = require('./report/webhook.test');
 const { runSandboxTests } = require('./sandbox/sandbox.test');
 const { runGvisorTests } = require('./sandbox/gvisor.test');
 const { runPreloadTests } = require('./unit/preload.test');
+const { runStringIocCorroborationTests } = require('./unit/string-ioc-corroboration.test');
 const { runMLFeatureExtractorTests } = require('./unit/ml-feature-extractor.test');
+const { runFpCapVetoTests } = require('./unit/fp-cap-vetoes.test');
+const { runScoringGuardTests } = require('./unit/scoring-guards.test');
+const { runCheckOverridesTests } = require('./unit/check-overrides.test');
+const { runDilutionThresholdTests } = require('./unit/dilution-thresholds.test');
+const { runE2EScoringGuardTests } = require('./integration/e2e-scoring-guards.test');
+const { runE2EFpCapTests } = require('./integration/e2e-fp-caps.test');
+const { runExecutedFilesTests } = require('./integration/executed-files.test');
 const { runMLClassifierTests } = require('./unit/ml-classifier.test');
 const { runFpClustersTests } = require('./unit/fp-clusters.test');
 const { runRegressionCheckTests } = require('./unit/regression-check.test');
@@ -156,6 +169,7 @@ const { runGroundTruthSmokeTests } = require('./integration/ground-truth-smoke.t
 const { runV266FixesTests } = require('./integration/v266-fixes.test');
 const { runEvaluationSmokeTests } = require('./integration/evaluation-smoke.test');
 const { runCompoundScoringTests } = require('./integration/compound-scoring.test');
+const { runF10VendorCliE2ETests } = require('./integration/f10-vendor-cli-e2e.test');
 const { runSingleFireCriticalFloorTests } = require('./integration/single-fire-critical-floor.test');
 const { runDecayAggregationTests } = require('./integration/decay-aggregation.test');
 const { runCompoundReplacementTests } = require('./integration/compound-replacement.test');
@@ -180,11 +194,14 @@ const { runTriageTests } = require('./integration/triage.test');
 const { runTriageGtTests } = require('./integration/triage-gt.test');
 const { runSandboxGateTests } = require('./integration/sandbox-gate.test');
 const { runSandboxDecisionTests } = require('./unit/sandbox-decision.test');
+const { runSandboxCompoundTriggersTests } = require('./unit/sandbox-compound-triggers.test');
+const { runMonitorFeedTests } = require('./integration/monitor-feed.test');
 const { runOomDetectionsJsonlTests } = require('./integration/oom-detections-jsonl.test');
 const { runAutoLabelerTests } = require('./integration/auto-labeler.test');
 
 // Meta tests (test-suite quality guards)
 const { runNoSourceGrepTests } = require('./meta/no-source-grep.test');
+const { runNoOrphanTestsTests } = require('./meta/no-orphan-tests.test');
 
 // Temporal analysis tests
 const { runTemporalAnalysisTests } = require('./temporal/temporal-analysis.test');
@@ -227,6 +244,9 @@ async function timed(name, fn) {
   await timed('native-drop-exec', runNativeDropExecTests);
   await timed('binary-source', runBinarySourceTests);
   await timed('typosquat', runTyposquatTests);
+  // Audit 2026-05 FIXED guards (RT-C1 compound, F13 cap end to end, monorepo scanner).
+  await timed('audit-typosquat-findings', runAuditTyposquatFindingsTests);
+  await timed('audit-monorepo-findings', runAuditMonorepoFindingsTests);
 
   // Integration tests (CLI spawns processes but uses small fixtures)
   await timed('cli', runCliTests);
@@ -242,12 +262,15 @@ async function timed(name, fn) {
   await timed('python', runPythonTests);
   await timed('python-source', runPythonSourceTests);
   await timed('python-ast', runPythonAstTests);
+  await timed('pyproject-cmdclass', runPyprojectCmdclassTests);
+  await timed('pth-payload', runPthPayloadTests);
   await timed('pypi-registry', runPyPIRegistryTests);
   await timed('pypi-maintainer', runPyPIMaintainerTests);
   await timed('pypi-release-zero', runPyPIReleaseZeroTests);
   await timed('sandbox', runSandboxTests);
   await timed('gvisor', runGvisorTests);
   await timed('preload', runPreloadTests);
+  await timed('string-ioc-corroboration', runStringIocCorroborationTests);
   await timed('sandbox-preload', runSandboxPreloadTests);
   await timed('entropy', runEntropyTests);
 
@@ -294,6 +317,7 @@ async function timed(name, fn) {
   await timed('crypto-exfil', runCryptoExfilTests);
   await timed('crypto-exfil-python', runCryptoExfilPythonTests);
   await timed('ast-bypass-regression', runAstBypassRegressionTests);
+  await timed('ast-parser-divergence', runAstParserDivergenceTests);
   await timed('trusted-dep-diff', runTrustedDepDiffTests);
 
   // IOC scraper tests (Phase 3)
@@ -330,6 +354,7 @@ async function timed(name, fn) {
 
   // Compound scoring tests (v2.9.2)
   await timed('compound-scoring', runCompoundScoringTests);
+  await timed('f10-vendor-cli-e2e', runF10VendorCliE2ETests);
 
   // Hybrid v3 Phase 1: single-fire critical floor
   await timed('single-fire-critical-floor', runSingleFireCriticalFloorTests);
@@ -365,6 +390,13 @@ async function timed(name, fn) {
 
   // ML feature extraction tests (v2.8.7)
   await timed('ml-feature-extractor', runMLFeatureExtractorTests);
+  await timed('fp-cap-vetoes', runFpCapVetoTests);
+  await timed('scoring-guards', runScoringGuardTests);
+  await timed('check-overrides', runCheckOverridesTests);
+  await timed('dilution-thresholds', runDilutionThresholdTests);
+  await timed('e2e-scoring-guards', runE2EScoringGuardTests);
+  await timed('e2e-fp-caps', runE2EFpCapTests);
+  await timed('executed-files', runExecutedFilesTests);
 
   // FP cluster aggregation (FPR Improvement Plan - Chantier 1)
   await timed('fp-clusters', runFpClustersTests);
@@ -442,6 +474,12 @@ async function timed(name, fn) {
   // Sandbox waste-cut decision tests (memory-skip + native-binary-shard skip)
   await timed('sandbox-decision', runSandboxDecisionTests);
 
+  // Sandbox compound triggers (src/sandbox/compound-triggers.js, wired in processor.js)
+  // and the monitor threat feed. Both files existed since v2.11.7 but were never
+  // registered here, so `npm test` never ran them (test audit 2026-11).
+  await timed('sandbox-compound-triggers', runSandboxCompoundTriggersTests);
+  await timed('monitor-feed', runMonitorFeedTests);
+
   // Monitor memory management tests (OOM prevention)
   await timed('monitor-memory', runMonitorMemoryTests);
 
@@ -464,6 +502,7 @@ async function timed(name, fn) {
 
   // Meta tests (test-suite quality guards — runs last, fast, no fixtures)
   await timed('meta-no-source-grep', runNoSourceGrepTests);
+  await timed('meta-no-orphan-tests', runNoOrphanTestsTests);
 
   // Drain any still-pending asyncTest promises before the tally — a floating
   // asyncTest (missing await) must never have its result killed by process.exit.
